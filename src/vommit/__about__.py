@@ -1,3 +1,3 @@
 from importlib.metadata import version
 
-__version__ = version("vommit")
+__version__ = version(__package__)

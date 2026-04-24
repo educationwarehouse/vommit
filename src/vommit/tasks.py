@@ -12,6 +12,7 @@ def setup(
     - check for vommit config in pyproject.toml
     - else: check for semantic-release < 8 config ; ask if user wants to migrate (tool.semantic_release; project.optional-dependencies.dev)
     - else: interactively ask to setup (tool.vommit ; project.optional-dependencies.dev)
+    + ask if user wants to switch __about__ to `__version__ = version(__package__)`
     + Extra option for initializing totally new project?
     - uv init --package <name>
     """
