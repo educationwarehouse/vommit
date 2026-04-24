@@ -1,14 +1,16 @@
 [project]
 name = "vommit"
 version = "0.0.0"
-description = "Add your description here"
+description = "A small ewok-based tool for managing edwh plugins and releases"
 readme = "README.md"
 authors = [
     { name = "Robin van der Noord", email = "robinvandernoord@gmail.com" }
 ]
 requires-python = ">=3.13"
 dependencies = [
-    "ewok"
+    "ewok",
+    "packaging",
+    "python-dateutil",
 ]
 
 [project.scripts]
