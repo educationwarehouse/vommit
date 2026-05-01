@@ -98,8 +98,8 @@ def test_find_main_branch_upstream():
 
         with chdir(local):
             assert (
-                    find_main_branch_upstream("origin")
-                    == f"branch-remote-{branch_identifier}"
+                find_main_branch_upstream("origin")
+                == f"branch-remote-{branch_identifier}"
             )
 
 
@@ -157,18 +157,13 @@ def test_pluralize_templates():
 
 
 def test_git_tag_format_template():
-    config = GitConfig.load({
-        "tag_format": "v{version}"
-
-    })
+    config = GitConfig.load({"tag_format": "v{version}"})
 
     assert config.format_tag(version="1.2.3") == "v1.2.3"
 
 
 def test_git_commit_format_template():
-    config = GitConfig.load({
-        "commit_format": "Release `{version}`;"
-    })
+    config = GitConfig.load({"commit_format": "Release `{version}`;"})
 
     assert config.format_commit(version="1.2.3") == "Release `1.2.3`;"
 
@@ -183,7 +178,9 @@ def test_commands_release_template():
         }
     )
 
-    assert config.release_command == "rm -rf dist ; python -m build ; twine upload dist/*"
+    assert (
+        config.release_command == "rm -rf dist ; python -m build ; twine upload dist/*"
+    )
 
 
 def test_version_bump_map_config():
@@ -196,16 +193,29 @@ def test_version_bump_map_config():
                 "fix": "patch",
                 "chore": "patch",
                 "breaky": "major",
-            }
+            },
         },
     )
 
     assert config.resolve_version_bump_from_commit("fix: something happened") == "patch"
-    assert config.resolve_version_bump_from_commit("feat(scope): add feature") == "minor"
-    assert config.resolve_version_bump_from_commit("breaky(everything): custom one") == "major"
-    assert config.resolve_version_bump_from_commit("feat!(scope): breaking change") == "major"
+    assert (
+        config.resolve_version_bump_from_commit("feat(scope): add feature") == "minor"
+    )
+    assert (
+        config.resolve_version_bump_from_commit("breaky(everything): custom one")
+        == "major"
+    )
+    assert (
+        config.resolve_version_bump_from_commit("feat!(scope): breaking change")
+        == "major"
+    )
     assert config.resolve_version_bump_from_commit("feat!: breaking change") == "major"
 
-    assert config.resolve_version_bump_from_commit("feat(project): another breaking change\n\nBREAKING CHANGE: something else changed") == "major"
+    assert (
+        config.resolve_version_bump_from_commit(
+            "feat(project): another breaking change\n\nBREAKING CHANGE: something else changed"
+        )
+        == "major"
+    )
     assert config.resolve_version_bump_from_commit("refactor: reformat code") is None
     assert config.resolve_version_bump_from_commit("first commit") is None

@@ -2,6 +2,7 @@
 
 import shlex
 
+from configuraptor import asdict
 from ewok import Context, task
 
 from .config import Config
@@ -30,7 +31,7 @@ def setup(
     + Extra option for initializing totally new project?
     - uv init --package <name>
     """
-    config = Config.from_pyproject()
+    config = Config.interactive()
 
     print(config)
 

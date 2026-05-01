@@ -7,6 +7,8 @@ from pathlib import Path
 
 from configuraptor import Defaultable, TypedConfig
 
+from .interactive import Interactive
+
 TOML_KEY = "tool.vommit"
 DERIVE_BRANCH = "<head>"
 VersionBump = t.Literal["major", "minor", "patch"]
@@ -65,16 +67,26 @@ def find_main_branch(
 
 
 class GitConfig(TypedConfig, Defaultable):
-    enabled: bool = True
-    origin: str = "origin"
+    enabled: t.Annotated[bool, "Enable git integration?"] = True
+    origin: t.Annotated[str, "Git remote name"] = "origin"
 
     # special '<head>' does lookup (first remote, then local config)
-    branch: str | t.Literal["<head>", "<current>"] = DERIVE_BRANCH
-    on_wrong_branch: t.Literal["error", "warn", "switch"] = "error"
+    branch: t.Annotated[
+        str | t.Literal["<head>", "<current>"],
+        "Release branch (<head> to auto-detect; <current> to stay on the branch)",
+    ] = DERIVE_BRANCH
+    on_wrong_branch: t.Annotated[
+        t.Literal["error", "warn", "switch"],
+        "If on wrong branch",
+    ] = "error"
 
     # set to None to disable tagging/committing:
-    tag_format: str | None = "v{version}"
-    commit_format: str | None = "{version}"
+    tag_format: t.Annotated[str | None, "Git tag format (empty to disable)"] = (
+        "v{version}"
+    )
+    commit_format: t.Annotated[
+        str | None, "Git commit message format (empty to disable)"
+    ] = "{version}"
 
     def __post_init__(self):
         if self.branch == DERIVE_BRANCH:
@@ -96,6 +108,8 @@ class GitConfig(TypedConfig, Defaultable):
 
 
 class ChangelogConfig(TypedConfig, Defaultable):
+    enabled: t.Annotated[bool, "Enable changelog updates?"] = True
+
     levels: dict[str, str] = {
         # note: use {} syntax for pluralization
         "feat": "Feature{s}",
@@ -104,7 +118,9 @@ class ChangelogConfig(TypedConfig, Defaultable):
         "docs": "Documentation",
     }
 
-    placeholder_regex: str = r"^<!--\s*next-version-placeholder\s*-->$"
+    placeholder_regex: t.Annotated[str, "Placeholder regex in CHANGELOG"] = (
+        r"^<!--\s*next-version-placeholder\s*-->$"
+    )
 
     def __post_init__(self):
         self._placeholder_re = re.compile(self.placeholder_regex, flags=re.MULTILINE)
@@ -138,17 +154,19 @@ class ChangelogConfig(TypedConfig, Defaultable):
 
 
 class PypiConfig(TypedConfig, Defaultable):
-    enabled: bool = True
-    username: str = "__token__"
-    use_keyring: bool = True
+    enabled: t.Annotated[bool, "Enable PyPI publishing?"] = True
+    username: t.Annotated[str, "PyPI username"] = "__token__"
+    use_keyring: t.Annotated[bool, "Use keyring for PyPI auth?"] = True
 
 
 class CommandConfig(TypedConfig, Defaultable):
-    clean: str = "rm -r ./dist"
-    build: str = "uv build"
-    publish: str = "uv publish"
+    clean: t.Annotated[str, "Clean command"] = "rm -r ./dist"
+    build: t.Annotated[str, "Build command"] = "uv build"
+    publish: t.Annotated[str, "Publish command"] = "uv publish"
 
-    release: str = "{clean} && {build} && {publish}"
+    release: t.Annotated[str, "Release pipeline command"] = (
+        "{clean} && {build} && {publish}"
+    )
 
     @property
     def release_command(self) -> str:
@@ -159,16 +177,20 @@ class CommandConfig(TypedConfig, Defaultable):
         )
 
 
-class Config(TypedConfig, Defaultable):
-    git: GitConfig
-    changelog: ChangelogConfig
-    pypi: PypiConfig
-    commands: CommandConfig
+class Config(TypedConfig, Defaultable, Interactive):
+    git: t.Annotated[GitConfig, "Git settings"]
+    changelog: t.Annotated[ChangelogConfig, "Changelog settings"]
+    pypi: t.Annotated[PypiConfig, "PyPI settings"]
+    commands: t.Annotated[CommandConfig, "Command settings"]
 
     # feat!(scope): ... to bump major
-    allow_breaking_bang: bool = True
+    allow_breaking_bang: t.Annotated[
+        bool, "Treat ! in commit header as major bump?"
+    ] = True
     # BREAKING CHANGE: ... to bump major
-    allow_breaking_footer: bool = True
+    allow_breaking_footer: t.Annotated[
+        bool, "Treat BREAKING CHANGE footer as major bump?"
+    ] = True
 
     # todo:
     #  - compatibility/migration from old `tool.semantic_release` config
