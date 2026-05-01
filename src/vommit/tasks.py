@@ -6,6 +6,9 @@ from ewok import Context, task
 
 from .config import Config
 
+# def task(*a, **kw):
+#     return ewok_task(*a, **kw)
+
 
 @task()
 def init(c: Context, project_name: str, non_interactive: bool = False):

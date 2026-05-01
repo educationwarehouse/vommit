@@ -8,7 +8,9 @@ import pytest
 
 from src.vommit.config import (
     ChangelogConfig,
+    CommandConfig,
     Config,
+    GitConfig,
     bash,
     find_main_branch_local,
     find_main_branch_upstream,
@@ -96,8 +98,8 @@ def test_find_main_branch_upstream():
 
         with chdir(local):
             assert (
-                find_main_branch_upstream("origin")
-                == f"branch-remote-{branch_identifier}"
+                    find_main_branch_upstream("origin")
+                    == f"branch-remote-{branch_identifier}"
             )
 
 
@@ -115,7 +117,7 @@ def test_placeholder_marker_regex():
     config = ChangelogConfig.load(
         {
             "placeholder_regex": r"^<!--\s*latest-version-placeholder\s*-->$",
-        }
+        },
     )
 
     to_insert = textwrap.dedent("""
@@ -152,3 +154,58 @@ def test_pluralize_templates():
 
     assert config.pluralize("perf", 1) == "Performance"
     assert config.pluralize("docs", 2) == "Documentation"
+
+
+def test_git_tag_format_template():
+    config = GitConfig.load({
+        "tag_format": "v{version}"
+
+    })
+
+    assert config.format_tag(version="1.2.3") == "v1.2.3"
+
+
+def test_git_commit_format_template():
+    config = GitConfig.load({
+        "commit_format": "Release `{version}`;"
+    })
+
+    assert config.format_commit(version="1.2.3") == "Release `1.2.3`;"
+
+
+def test_commands_release_template():
+    config = CommandConfig.load(
+        {
+            "clean": "rm -rf dist",
+            "build": "python -m build",
+            "publish": "twine upload dist/*",
+            "release": "{clean} ; {build} ; {publish}",
+        }
+    )
+
+    assert config.release_command == "rm -rf dist ; python -m build ; twine upload dist/*"
+
+
+def test_version_bump_map_config():
+    config = Config.load(
+        {
+            "allow_breaking_bang": True,
+            "allow_breaking_footer": True,
+            "version_bump_map": {
+                "feat": "minor",
+                "fix": "patch",
+                "chore": "patch",
+                "breaky": "major",
+            }
+        },
+    )
+
+    assert config.resolve_version_bump_from_commit("fix: something happened") == "patch"
+    assert config.resolve_version_bump_from_commit("feat(scope): add feature") == "minor"
+    assert config.resolve_version_bump_from_commit("breaky(everything): custom one") == "major"
+    assert config.resolve_version_bump_from_commit("feat!(scope): breaking change") == "major"
+    assert config.resolve_version_bump_from_commit("feat!: breaking change") == "major"
+
+    assert config.resolve_version_bump_from_commit("feat(project): another breaking change\n\nBREAKING CHANGE: something else changed") == "major"
+    assert config.resolve_version_bump_from_commit("refactor: reformat code") is None
+    assert config.resolve_version_bump_from_commit("first commit") is None
