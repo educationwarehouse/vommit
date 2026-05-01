@@ -11,3 +11,7 @@ wheels/
 venv*
 .env
 uv.lock
+
+coverage.xml
+coverage.json
+.coverage

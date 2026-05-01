@@ -37,3 +37,8 @@ pythonpath = [
 exclude_also = [
     '\A(?s:.*# pragma: exclude file.*)\Z',
 ]
+
+
+[tool.su6]
+coverage = 100
+badge = "coverage.svg"
