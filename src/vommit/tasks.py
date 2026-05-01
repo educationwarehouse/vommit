@@ -1,11 +1,20 @@
+import shlex
+
 from ewok import Context, task
+
+from .config import Config
+
+
+@task()
+def init(c: Context, project_name: str, non_interactive: bool = False):
+    c.run(f"uv init --package {shlex.quote(project_name)}")
+    return setup(c, non_interactive=non_interactive)
 
 
 @task()
 def setup(
     _: Context,
     non_interactive: bool = False,
-    name: str | None = None,
 ) -> None:
     """
     Init (default: interacitve ; allow --non-interactive with smart defaults):
@@ -16,6 +25,9 @@ def setup(
     + Extra option for initializing totally new project?
     - uv init --package <name>
     """
+    config = Config.from_pyproject()
+
+    print(config)
 
 
 @task()
@@ -35,6 +47,7 @@ def bump(
     - Write changelog
     - commit + tag
     """
+    config = Config.from_pyproject()
 
 
 @task()
@@ -53,3 +66,9 @@ def release(
     - uv build
     - uv publish
     """
+    config = Config.from_pyproject()
+
+
+# todo: 'init' to make a whole new project? = uv init + setup
+# todo: migrate from tool.semantic_release ; allow setting error/warn/skip on unexpected keys
+# todo: `vommit add` to add a dependency?
