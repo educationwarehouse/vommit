@@ -2,8 +2,16 @@ import tempfile
 from contextlib import chdir
 from pathlib import Path
 
-from src.vommit import Config
+import pytest
 
+from src.vommit import Config
+from vommit.config import throw
+
+
+def test_throw():
+    with pytest.raises(ValueError):
+        throw(ValueError(":)"))
+        assert False
 
 def test_config_pyproject():
     contents = """
@@ -19,6 +27,8 @@ def test_config_pyproject():
         assert config_default == Config.default()
 
         assert config_default.git.origin == "origin"
+
+        # fixme: properly init git; test find_main_branch_local and find_main_branch_upstream
         assert config_default.git.branch == "master"
 
         pyproject = Path(d) / "pyproject.toml"

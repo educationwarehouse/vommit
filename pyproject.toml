@@ -41,6 +41,8 @@ exclude_also = [
 
 
 [tool.su6]
+directory = "src"
+
 coverage = 100
 badge = "coverage.svg"
 

@@ -1,3 +1,5 @@
+# pragma: exclude file
+
 import ewok
 
 from . import tasks

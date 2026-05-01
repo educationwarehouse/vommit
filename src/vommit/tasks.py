@@ -1,3 +1,5 @@
+# pragma: exclude file
+
 import shlex
 
 from ewok import Context, task

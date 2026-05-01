@@ -27,7 +27,7 @@ def throw(error: Exception) -> t.Never:
     raise error
 
 
-def find_main_branch_upstream(origin: str) -> str | None:
+def find_main_branch_upstream(origin: str = "origin") -> str | None:
     origin = shlex.quote(origin)
     _, stdout, _ = bash(f"git ls-remote --symref {origin} HEAD")
 
