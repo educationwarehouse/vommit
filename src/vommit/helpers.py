@@ -1,0 +1,25 @@
+from importlib.metadata import version
+
+
+def canonical_version(package_name: str):
+    """
+    Determines the canonical version of a package.
+
+    This function extracts the last segment of a package name if it includes dots,
+    otherwise it uses the full package name. It then retrieves the corresponding
+    version of the package.
+
+    Args:
+        package_name (str): The name of the package. Can be a fully qualified
+        package name containing dots.
+
+    Returns:
+        str: The version of the specified package.
+
+    Example:
+        __version__ = vommit.canonical_version(__package__)
+    """
+
+    # e.g. src.vommit -> vommit
+    package = package_name.split(".")[-1] if "." in package_name else package_name
+    return version(package)

@@ -1,3 +1,3 @@
-from importlib.metadata import version
+from .helpers import canonical_version
 
-__version__ = version(__package__)
+__version__ = canonical_version(__package__)
