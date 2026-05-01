@@ -7,7 +7,7 @@ from pathlib import Path
 
 from configuraptor import Defaultable, TypedConfig
 
-from .interactive import Interactive
+from .interactive import InteractiveConfig
 
 TOML_KEY = "tool.vommit"
 DERIVE_BRANCH = "<head>"
@@ -177,7 +177,7 @@ class CommandConfig(TypedConfig, Defaultable):
         )
 
 
-class Config(TypedConfig, Defaultable, Interactive):
+class Config(InteractiveConfig, Defaultable):
     git: t.Annotated[GitConfig, "Git settings"]
     changelog: t.Annotated[ChangelogConfig, "Changelog settings"]
     pypi: t.Annotated[PypiConfig, "PyPI settings"]

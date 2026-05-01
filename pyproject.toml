@@ -48,3 +48,6 @@ coverage = 100
 badge = "coverage.svg"
 
 [tool.vommit]
+
+[tool.vommit.git]
+enabled = false

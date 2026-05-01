@@ -1,7 +1,11 @@
+# pragma: exclude file
+
 import typing as t
 
 import questionary
 from configuraptor import TypedConfig, load_into
+
+_ConfigT = t.TypeVar("_ConfigT", bound=TypedConfig)
 
 _PROMPT_STYLE = questionary.Style(
     [
@@ -169,7 +173,11 @@ def _enabled_field_name(fields: list[tuple[str, t.Any, str]]) -> str | None:
     return None
 
 
-def _interactive_build(cls: type[TypedConfig], depth: int = 0) -> t.Any:
+def _interactive_build(
+    cls: type[_ConfigT],
+    depth: int = 0,
+    defaults: _ConfigT | None = None,
+) -> _ConfigT:
     values: dict[str, t.Any] = {}
     hints = t.get_type_hints(cls, include_extras=True)
     fields: list[tuple[str, t.Any, str]] = []
@@ -193,8 +201,11 @@ def _interactive_build(cls: type[TypedConfig], depth: int = 0) -> t.Any:
 
     skip_remaining = False
     for field_name, field_type, label in fields:
-        has_default = hasattr(cls, field_name)
-        default = getattr(cls, field_name, None)
+        has_default = defaults is not None and hasattr(defaults, field_name)
+        default = getattr(defaults, field_name, None) if has_default else None
+        if not has_default:
+            has_default = hasattr(cls, field_name)
+            default = getattr(cls, field_name, None)
 
         if skip_remaining:
             continue
@@ -208,7 +219,14 @@ def _interactive_build(cls: type[TypedConfig], depth: int = 0) -> t.Any:
             continue
 
         if _is_typed_config_type(field_type):
-            values[field_name] = _interactive_build(field_type, depth + 1)
+            nested_defaults = None
+            if defaults is not None and hasattr(defaults, field_name):
+                maybe_nested_defaults = getattr(defaults, field_name)
+                if isinstance(maybe_nested_defaults, TypedConfig):
+                    nested_defaults = maybe_nested_defaults
+            values[field_name] = _interactive_build(
+                field_type, depth + 1, nested_defaults
+            )
             continue
 
         prompt_step += 1
@@ -228,13 +246,16 @@ def _interactive_build(cls: type[TypedConfig], depth: int = 0) -> t.Any:
         ):
             skip_remaining = True
 
-    return load_into(cls, values)
+    return t.cast(_ConfigT, load_into(cls, values))
 
 
-class Interactive:
+class InteractiveConfig(TypedConfig):
     @classmethod
-    def interactive(cls) -> t.Self:
-        return _interactive_build(cls)
+    def interactive(
+        cls: type[_ConfigT],
+        defaults: _ConfigT | None = None,
+    ) -> _ConfigT:
+        return _interactive_build(cls, defaults=defaults)
 
 
 # class Example(TypedConfig, Interactive):
