@@ -1,11 +1,36 @@
 # pragma: exclude file
 
 import typing as t
+from dataclasses import dataclass
 
 import questionary
 from configuraptor import TypedConfig, load_into
+from configuraptor.helpers import is_optional
 
 _ConfigT = t.TypeVar("_ConfigT", bound=TypedConfig)
+
+
+DeriveDefaultSpec = t.TypedDict(
+    "DeriveDefaultSpec",
+    {"from": str, "with": str, "when": t.Any},
+    total=False,
+)
+
+
+class AnnotatedMeta(t.TypedDict, total=False):
+    label: str | None
+    interactive: bool
+    derive_default: DeriveDefaultSpec
+
+
+@dataclass(frozen=True)
+class FieldSpec:
+    name: str
+    field_type: t.Any
+    label: str
+    interactive: bool = True
+    meta: AnnotatedMeta | None = None
+
 
 _PROMPT_STYLE = questionary.Style(
     [
@@ -22,8 +47,24 @@ _PROMPT_STYLE = questionary.Style(
 )
 
 
-def _is_typed_config_type(tp: t.Any) -> bool:
-    return isinstance(tp, type) and issubclass(tp, TypedConfig)
+def _is_typed_config_type(
+    _type: t.Any, with_optional: bool = True
+) -> type[TypedConfig] | None:
+    if with_optional and is_optional(_type):
+        return next(
+            (
+                arg
+                for arg in t.get_args(_type)
+                if isinstance(arg, type) and issubclass(arg, TypedConfig)
+            ),
+            None,
+        )
+    else:
+        return (
+            _type
+            if isinstance(_type, type) and issubclass(_type, TypedConfig)
+            else None
+        )
 
 
 def _container_kind(tp: t.Any) -> type[dict] | type[list] | None:
@@ -145,31 +186,30 @@ def _print_section_header(cls: type[TypedConfig], depth: int) -> None:
     questionary.print(f"{indent}{name}", style="fg:#64748b")
 
 
-def _unwrap_annotated(tp: t.Any) -> tuple[t.Any, str | None]:
+def _unwrap_annotated(tp: t.Any) -> tuple[t.Any, AnnotatedMeta]:
     if t.get_origin(tp) is not t.Annotated:
-        return tp, None
+        return tp, AnnotatedMeta()
 
     args = t.get_args(tp)
     if not args:
-        return tp, None
+        return tp, AnnotatedMeta()
 
     base_type = args[0]
     metadata = args[1:]
+    meta: AnnotatedMeta = {}
     for item in metadata:
-        if isinstance(item, str) and item.strip():
-            return base_type, item.strip()
-        if isinstance(item, dict) and "label" in item and str(item["label"]).strip():
-            return base_type, str(item["label"]).strip()
-        label_attr = getattr(item, "label", None)
-        if isinstance(label_attr, str) and label_attr.strip():
-            return base_type, label_attr.strip()
-    return base_type, None
+        if isinstance(item, str) and item.strip() and meta.get("label") is None:
+            meta["label"] = item.strip()
+        elif isinstance(item, dict):
+            meta |= item
+    return base_type, meta
 
 
-def _enabled_field_name(fields: list[tuple[str, t.Any, str]]) -> str | None:
-    for field_name, field_type, _ in fields:
-        if field_name == "enabled" and field_type is bool:
-            return field_name
+def _enabled_field_name(fields: list[FieldSpec]) -> FieldSpec | None:
+    for field in fields:
+        # fixme: next
+        if field.name == "enabled" and field.field_type is bool:
+            return field
     return None
 
 
@@ -177,37 +217,77 @@ def _interactive_build(
     cls: type[_ConfigT],
     depth: int = 0,
     defaults: _ConfigT | None = None,
+    present_paths: set[str] | None = None,
+    path_prefix: str = "",
 ) -> _ConfigT:
     values: dict[str, t.Any] = {}
     hints = t.get_type_hints(cls, include_extras=True)
-    fields: list[tuple[str, t.Any, str]] = []
+    fields: list[FieldSpec] = []
     for field_name, annotated_type in hints.items():
-        field_type, annotated_label = _unwrap_annotated(annotated_type)
-        fields.append((field_name, field_type, annotated_label or field_name))
+        field_type, meta = _unwrap_annotated(annotated_type)
+        fields.append(
+            FieldSpec(
+                name=field_name,
+                field_type=field_type,
+                label=meta.get("label") or field_name,
+                interactive=meta.get("interactive", True),
+                meta=meta,
+            )
+        )
 
     enabled_field = _enabled_field_name(fields)
     if enabled_field:
-        fields = sorted(fields, key=lambda item: item[0] != enabled_field)
+        fields = sorted(fields, key=lambda field: field.name != enabled_field.name)
 
     _print_section_header(cls, depth)
 
     scalar_fields = [
-        (field_name, field_type, label)
-        for field_name, field_type, label in fields
-        if not _container_kind(field_type) and not _is_typed_config_type(field_type)
+        field
+        for field in fields
+        if (
+            not _container_kind(field.field_type)
+            and not _is_typed_config_type(field.field_type)
+            and field.interactive
+            and (
+                present_paths is None
+                or f"{path_prefix}.{field.name}".strip(".") not in present_paths
+            )
+        )
     ]
     total_scalar_fields = max(1, len(scalar_fields))
     prompt_step = 0
 
     skip_remaining = False
-    for field_name, field_type, label in fields:
+    for field in fields:
+        field_name = field.name
+        field_type = field.field_type
+        field_path = f"{path_prefix}.{field_name}".strip(".")
+        label = field.label
         has_default = defaults is not None and hasattr(defaults, field_name)
         default = getattr(defaults, field_name, None) if has_default else None
         if not has_default:
             has_default = hasattr(cls, field_name)
             default = getattr(cls, field_name, None)
 
+        derive_default = (field.meta or {}).get("derive_default")
+        if (
+            isinstance(derive_default, dict)
+            and isinstance(derive_default.get("from"), str)
+            and isinstance(derive_default.get("with"), str)
+            and derive_default["from"] in values
+            and ("when" not in derive_default or default == derive_default.get("when"))
+        ):
+            derive_fn = getattr(cls, derive_default["with"], None)
+            if callable(derive_fn):
+                has_default = True
+                default = derive_fn(values[derive_default["from"]])
+
         if skip_remaining:
+            continue
+
+        if not field.interactive:
+            if has_default:
+                values[field_name] = default
             continue
 
         container_kind = _container_kind(field_type)
@@ -218,15 +298,43 @@ def _interactive_build(
                 values[field_name] = {} if container_kind is dict else []
             continue
 
-        if _is_typed_config_type(field_type):
+
+        typed_config_type = _is_typed_config_type(field_type)
+
+        if typed_config_type:
             nested_defaults = None
             if defaults is not None and hasattr(defaults, field_name):
                 maybe_nested_defaults = getattr(defaults, field_name)
                 if isinstance(maybe_nested_defaults, TypedConfig):
                     nested_defaults = maybe_nested_defaults
+                elif is_optional(field_type) and not maybe_nested_defaults:
+                    nested_defaults = t.cast(
+                        TypedConfig,
+                        load_into(typed_config_type, {"enabled": False}),
+                    )
+
             values[field_name] = _interactive_build(
-                field_type, depth + 1, nested_defaults
+                typed_config_type,
+                depth + 1,
+                nested_defaults,
+                present_paths,
+                field_path,
             )
+            continue
+
+        if (
+            field.interactive
+            and present_paths is not None
+            and field_path in present_paths
+        ):
+            if has_default:
+                values[field_name] = default
+                if (
+                    enabled_field
+                    and field_name == enabled_field.name
+                    and values[field_name] is False
+                ):
+                    skip_remaining = True
             continue
 
         prompt_step += 1
@@ -241,7 +349,7 @@ def _interactive_build(
         )
         if (
             enabled_field
-            and field_name == enabled_field
+            and field_name == enabled_field.name
             and values[field_name] is False
         ):
             skip_remaining = True
@@ -249,13 +357,44 @@ def _interactive_build(
     return t.cast(_ConfigT, load_into(cls, values))
 
 
+def _interactive_key_paths(
+    cls: type[TypedConfig],
+    prefix: str = "",
+) -> set[str]:
+    paths: set[str] = set()
+    hints = t.get_type_hints(cls, include_extras=True)
+
+    for field_name, annotated_type in hints.items():
+        field_type, meta = _unwrap_annotated(annotated_type)
+        if not meta.get("interactive", True):
+            continue
+
+        field_path = f"{prefix}.{field_name}".strip(".")
+        typed_config_type = _is_typed_config_type(field_type)
+        if typed_config_type:
+            paths |= _interactive_key_paths(typed_config_type, prefix=field_path)
+            continue
+
+        if _container_kind(field_type):
+            continue
+
+        paths.add(field_path)
+
+    return paths
+
+
 class InteractiveConfig(TypedConfig):
     @classmethod
     def interactive(
         cls: type[_ConfigT],
         defaults: _ConfigT | None = None,
+        present_paths: set[str] | None = None,
     ) -> _ConfigT:
-        return _interactive_build(cls, defaults=defaults)
+        return _interactive_build(cls, defaults=defaults, present_paths=present_paths)
+
+    @classmethod
+    def interactive_key_paths(cls) -> set[str]:
+        return _interactive_key_paths(cls)
 
 
 # class Example(TypedConfig, Interactive):

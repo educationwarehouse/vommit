@@ -3,8 +3,10 @@ import shlex
 import string
 import subprocess
 import typing as t
+from datetime import date
 from pathlib import Path
 
+import tomlkit
 from configuraptor import Defaultable, TypedConfig
 
 from .interactive import InteractiveConfig
@@ -16,9 +18,10 @@ VersionBump = t.Literal["major", "minor", "patch"]
 RE_HEAD = re.compile(r"refs/heads/(\S+)")
 RE_COMMIT_HEADER = re.compile(
     r"^(?P<type>[A-Za-z][\w-]*)(?P<bang_before_scope>!)?"
-    r"(?:\((?P<scope>[^)]+)\))?(?P<bang_after_scope>!)?:"
+    r"(?:\((?P<scope>[^)]+)\))?(?P<bang_after_scope>!)?:",
 )
 RE_BREAKING_CHANGE_FOOTER = re.compile(r"(?im)^(?:BREAKING[ -]CHANGE):\s+.+$")
+RE_WHITESPACE_RUN = re.compile(r"\s+")
 
 
 def bash(command: str) -> tuple[int, str, str]:
@@ -39,6 +42,59 @@ def throw(error: Exception) -> t.Never:
     Functional raise, useful for if ... else ... or callbacks.
     """
     raise error
+
+
+def _to_plain_mapping(value: t.Any) -> t.Any:
+    if isinstance(value, dict):
+        return {k: _to_plain_mapping(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_to_plain_mapping(v) for v in value]
+    if hasattr(value, "__dict__"):
+        if getattr(value, "enabled", None) is False:
+            return {"enabled": False}
+        return {
+            k: _to_plain_mapping(v)
+            for k, v in vars(value).items()
+            if not k.startswith("_")
+        }
+    return value
+
+
+def _ensure_toml_table(parent: t.Any, key: str) -> t.Any:
+    if key not in parent or not isinstance(parent[key], dict):
+        parent[key] = tomlkit.table()
+    return parent[key]
+
+
+def _merge_toml_table_in_place(toml_table: t.Any, data: dict[str, t.Any]) -> None:
+    for key, value in data.items():
+        if value is None:
+            continue
+        if isinstance(value, dict):
+            child = _ensure_toml_table(toml_table, key)
+            _merge_toml_table_in_place(child, value)
+            continue
+        toml_table[key] = tomlkit.item(value)
+
+
+def _get_nested_mapping(node: t.Any, dotted_key: str) -> dict[str, t.Any] | None:
+    current = node
+    for part in dotted_key.split("."):
+        if not isinstance(current, dict) or part not in current:
+            return None
+        current = current[part]
+    return current if isinstance(current, dict) else None
+
+
+def _collect_leaf_key_paths(data: dict[str, t.Any], prefix: str = "") -> set[str]:
+    paths: set[str] = set()
+    for key, value in data.items():
+        current = f"{prefix}.{key}".strip(".")
+        if isinstance(value, dict):
+            paths |= _collect_leaf_key_paths(value, current)
+            continue
+        paths.add(current)
+    return paths
 
 
 def find_main_branch_upstream(origin: str = "origin") -> str | None:
@@ -97,7 +153,7 @@ class GitConfig(TypedConfig, Defaultable):
             ) or throw(
                 ValueError(
                     "main git branch could not be derived; Please set it via `tool.vommit.git.branch`",
-                )
+                ),
             )
 
     def format_tag(self, version: str) -> str | None:
@@ -109,6 +165,7 @@ class GitConfig(TypedConfig, Defaultable):
 
 class ChangelogConfig(TypedConfig, Defaultable):
     enabled: t.Annotated[bool, "Enable changelog updates?"] = True
+    file: t.Annotated[str, "Changelog file path"] = "CHANGELOG.md"
 
     levels: dict[str, str] = {
         # note: use {} syntax for pluralization
@@ -118,12 +175,37 @@ class ChangelogConfig(TypedConfig, Defaultable):
         "docs": "Documentation",
     }
 
-    placeholder_regex: t.Annotated[str, "Placeholder regex in CHANGELOG"] = (
-        r"^<!--\s*next-version-placeholder\s*-->$"
+    placeholder: t.Annotated[str, "Placeholder marker in CHANGELOG"] = (
+        "<!-- next-version-placeholder -->"
+    )
+    placeholder_regex: t.Annotated[
+        str,
+        "Optional placeholder regex override in CHANGELOG",
+        {
+            "derive_default": {
+                "from": "placeholder",
+                "with": "build_placeholder_regex",
+                "when": "<auto>",
+            }
+        },
+    ] = "<auto>"
+    entry_title_format: t.Annotated[str, "Changelog entry title format"] = (
+        "## v{version} ({date:%Y-%m-%d})"
     )
 
     def __post_init__(self):
-        self._placeholder_re = re.compile(self.placeholder_regex, flags=re.MULTILINE)
+        effective_regex = (
+            self.build_placeholder_regex(self.placeholder)
+            if self.placeholder_regex in {"", "<auto>"}
+            else self.placeholder_regex
+        )
+        self._placeholder_re = re.compile(effective_regex, flags=re.MULTILINE)
+
+    @staticmethod
+    def build_placeholder_regex(placeholder: str) -> str:
+        escaped = re.escape(placeholder.strip())
+        flexible_whitespace = RE_WHITESPACE_RUN.sub(r"\\s*", escaped)
+        return rf"^{flexible_whitespace}$"
 
     def apply_placeholder(self, changelog: str, to_insert: str) -> str | None:
         # Keep marker and insert content right below it.
@@ -136,6 +218,28 @@ class ChangelogConfig(TypedConfig, Defaultable):
         replacement = f"{marker}\n\n{insertion}"
 
         return self._placeholder_re.sub(replacement, changelog, count=1)
+
+    def format_entry_title(self, version: str, today: date | None = None) -> str:
+        return self.entry_title_format.format(
+            version=version, date=today or date.today()
+        )
+
+    def ensure_file(self, base_dir: str | Path | None = None) -> Path | None:
+        if not self.enabled:
+            return None
+
+        base = Path(base_dir) if base_dir is not None else Path.cwd()
+        changelog_file = Path(self.file)
+        if not changelog_file.is_absolute():
+            changelog_file = base / changelog_file
+
+        if not changelog_file.exists():
+            changelog_file.parent.mkdir(parents=True, exist_ok=True)
+            with changelog_file.open("w") as f:
+                f.write("# Changelog\n\n")
+                f.write(f"{self.placeholder}\n")
+
+        return changelog_file
 
     def pluralize(self, level: str, count: int) -> str:
         template = self.levels[level]
@@ -164,9 +268,11 @@ class CommandConfig(TypedConfig, Defaultable):
     build: t.Annotated[str, "Build command"] = "uv build"
     publish: t.Annotated[str, "Publish command"] = "uv publish"
 
-    release: t.Annotated[str, "Release pipeline command"] = (
-        "{clean} && {build} && {publish}"
-    )
+    release: t.Annotated[
+        str,
+        "Release pipeline command",
+        {"interactive": False},
+    ] = "{clean} && {build} && {publish}"
 
     @property
     def release_command(self) -> str:
@@ -178,10 +284,10 @@ class CommandConfig(TypedConfig, Defaultable):
 
 
 class Config(InteractiveConfig, Defaultable):
-    git: t.Annotated[GitConfig, "Git settings"]
-    changelog: t.Annotated[ChangelogConfig, "Changelog settings"]
-    pypi: t.Annotated[PypiConfig, "PyPI settings"]
-    commands: t.Annotated[CommandConfig, "Command settings"]
+    git: t.Annotated[GitConfig | None, "Git settings"]
+    changelog: t.Annotated[ChangelogConfig | None, "Changelog settings"]
+    pypi: t.Annotated[PypiConfig | None, "PyPI settings"]
+    commands: t.Annotated[CommandConfig | None, "Command settings"]
 
     # feat!(scope): ... to bump major
     allow_breaking_bang: t.Annotated[
@@ -207,7 +313,8 @@ class Config(InteractiveConfig, Defaultable):
         return self.version_bump_map.get(change_level)
 
     def resolve_version_bump_from_commit(
-        self, commit_subject: str
+        self,
+        commit_subject: str,
     ) -> VersionBump | None:
         commit_text = commit_subject.strip()
         if self.allow_breaking_footer and RE_BREAKING_CHANGE_FOOTER.search(commit_text):
@@ -227,10 +334,85 @@ class Config(InteractiveConfig, Defaultable):
         return self.resolve_version_bump(change_level)
 
     @classmethod
-    def from_pyproject(cls, toml_key: str = TOML_KEY) -> t.Self:
-        pyproject = Path.cwd() / "pyproject.toml"
-
+    def from_pyproject_path(
+        cls,
+        pyproject: Path,
+        toml_key: str = TOML_KEY,
+    ) -> t.Self:
         if not pyproject.exists():
             return cls.default()
+        return cls.load(pyproject.absolute(), key=toml_key, convert_types=True)
 
-        return cls.load(pyproject.absolute(), key=toml_key)
+    @classmethod
+    def from_pyproject(cls, toml_key: str = TOML_KEY) -> t.Self:
+        return cls.from_pyproject_path(Path.cwd() / "pyproject.toml", toml_key=toml_key)
+
+    @classmethod
+    def has_pyproject_config(
+        cls,
+        pyproject: str | Path | None = None,
+        toml_key: str = TOML_KEY,
+    ) -> bool:
+        pyproject_path = (
+            Path(pyproject) if pyproject is not None else Path.cwd() / "pyproject.toml"
+        )
+        if not pyproject_path.exists():
+            return False
+        doc = tomlkit.parse(pyproject_path.read_text())
+        return _get_nested_mapping(doc, toml_key) is not None
+
+    @classmethod
+    def configured_key_paths(
+        cls,
+        pyproject: str | Path | None = None,
+        toml_key: str = TOML_KEY,
+    ) -> set[str]:
+        pyproject_path = (
+            Path(pyproject) if pyproject is not None else Path.cwd() / "pyproject.toml"
+        )
+        if not pyproject_path.exists():
+            return set()
+        doc = tomlkit.parse(pyproject_path.read_text())
+        table = _get_nested_mapping(doc, toml_key)
+        if table is None:
+            return set()
+        return _collect_leaf_key_paths(table)
+
+    @classmethod
+    def is_complete(
+        cls,
+        pyproject: str | Path | None = None,
+        toml_key: str = TOML_KEY,
+    ) -> bool:
+        if not cls.has_pyproject_config(pyproject=pyproject, toml_key=toml_key):
+            return False
+        configured = cls.configured_key_paths(pyproject=pyproject, toml_key=toml_key)
+        required = cls.interactive_key_paths()
+        return required.issubset(configured)
+
+    def write_to_pyproject(
+        self,
+        pyproject: str | Path | None = None,
+        toml_key: str = TOML_KEY,
+    ) -> None:
+        pyproject_path = (
+            Path(pyproject) if pyproject is not None else Path.cwd() / "pyproject.toml"
+        )
+        doc = (
+            tomlkit.parse(pyproject_path.read_text())
+            if pyproject_path.exists()
+            else tomlkit.document()
+        )
+
+        key_parts = toml_key.split(".")
+        target = doc
+        for part in key_parts[:-1]:
+            target = _ensure_toml_table(target, part)
+
+        # write toml in a way that we keep comments, whitespace intact:
+
+        root = _ensure_toml_table(target, key_parts[-1])
+        payload = _to_plain_mapping(self)
+        _merge_toml_table_in_place(root, payload)
+
+        pyproject_path.write_text(tomlkit.dumps(doc) + "\n")

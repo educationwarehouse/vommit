@@ -8,9 +8,10 @@ authors = [
 ]
 requires-python = ">=3.13"
 dependencies = [
-    "configuraptor >= 2.5, < 3",
+    "configuraptor >= 2.5.4, < 3",
     "ewok",
     "questionary >= 2, < 3",
+    "rich",
     "tomlkit",
 ]
 

@@ -2,6 +2,7 @@ import tempfile
 import textwrap
 import uuid
 from contextlib import chdir
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -168,6 +169,24 @@ def test_git_commit_format_template():
     assert config.format_commit(version="1.2.3") == "Release `1.2.3`;"
 
 
+def test_changelog_entry_title_format_default():
+    config = ChangelogConfig.default()
+    assert (
+        config.format_entry_title(version="1.2.3", today=date(2023, 4, 10))
+        == "## v1.2.3 (2023-04-10)"
+    )
+
+
+def test_changelog_entry_title_format_custom_date_spec():
+    config = ChangelogConfig.load(
+        {"entry_title_format": "## release {version} [{date:%d/%m/%Y}]"},
+    )
+    assert (
+        config.format_entry_title(version="1.2.3", today=date(2023, 4, 10))
+        == "## release 1.2.3 [10/04/2023]"
+    )
+
+
 def test_commands_release_template():
     config = CommandConfig.load(
         {
@@ -175,7 +194,7 @@ def test_commands_release_template():
             "build": "python -m build",
             "publish": "twine upload dist/*",
             "release": "{clean} ; {build} ; {publish}",
-        }
+        },
     )
 
     assert (
@@ -213,9 +232,34 @@ def test_version_bump_map_config():
 
     assert (
         config.resolve_version_bump_from_commit(
-            "feat(project): another breaking change\n\nBREAKING CHANGE: something else changed"
+            "feat(project): another breaking change\n\nBREAKING CHANGE: something else changed",
         )
         == "major"
     )
     assert config.resolve_version_bump_from_commit("refactor: reformat code") is None
     assert config.resolve_version_bump_from_commit("first commit") is None
+
+
+def test_write_to_pyproject_comments_intact():
+    some_config = textwrap.dedent(
+        """
+        [tool.vommit]
+        # this is config for the vommit release tool
+        git = false # shorthand for tool.vommit.git.enabled = false
+        """
+    )
+
+    with tempfile.TemporaryDirectory() as d:
+        pyproject = Path(d) / "pyproject.toml"
+        pyproject.write_text(some_config)
+
+        config = Config.from_pyproject_path(pyproject)
+        config.write_to_pyproject(pyproject)
+
+        pyproject_contents = pyproject.read_text()
+
+    assert "# this is config for the vommit release tool" in pyproject_contents
+    assert (
+        "git = false # shorthand for tool.vommit.git.enabled = false"
+        in pyproject_contents
+    )

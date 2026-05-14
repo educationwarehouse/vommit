@@ -1,25 +1,28 @@
 # pragma: exclude file
 
 import shlex
+import typing as t
 
+import rich
 from ewok import Context, task
 
 from .config import Config
 
-# def task(*a, **kw):
-#     return ewok_task(*a, **kw)
+SetupMode = t.Literal["missing", "all"]
 
 
 @task()
 def init(c: Context, project_name: str, non_interactive: bool = False):
     c.run(f"uv init --package {shlex.quote(project_name)}")
-    return setup(c, non_interactive=non_interactive)
+    return setup(c, non_interactive=non_interactive, project_dir=project_name)
 
 
 @task()
 def setup(
     _: Context,
     non_interactive: bool = False,
+    project_dir: str | None = None,
+    mode: SetupMode = "missing",
 ) -> None:
     """
     Init (default: interacitve ; allow --non-interactive with smart defaults):
@@ -30,9 +33,27 @@ def setup(
     + Extra option for initializing totally new project?
     - uv init --package <name>
     """
-    current_config = Config.from_pyproject()
+    config = Config.from_pyproject()
 
-    config = current_config if non_interactive else Config.interactive(current_config)
+    if not non_interactive:
+        present_paths = (
+            Config.configured_key_paths()
+            if mode == "missing" and Config.has_pyproject_config()
+            else None
+        )
+
+        if mode == "missing" and Config.is_complete():
+            rich.print(
+                "[blue]Nothing to configure: existing vommit config is already complete.[/blue]"
+            )
+            config.write_to_pyproject()
+            config.changelog.ensure_file(project_dir)
+            return
+
+        config = Config.interactive(config, present_paths=present_paths)
+
+    config.write_to_pyproject()
+    config.changelog.ensure_file(project_dir)
 
 
 @task()
