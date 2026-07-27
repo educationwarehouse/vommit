@@ -1,14 +1,63 @@
 # pragma: exclude file
+#
+# Entrypoints only: argument plumbing, output and error translation.
+# Anything with logic in it belongs in a module that can be tested without a Context.
 
 import shlex
 import typing as t
+from contextlib import contextmanager
+from pathlib import Path
 
 import rich
 from ewok import Context, task
+from invoke import Exit
 
-from .config import Config
+from .bump import BumpRequest, BumpResult, run_bump, select_level
+from .changelog import Changelog
+from .config import DERIVE_BRANCH, Config
+from .errors import VommitError
+from .git import GitRepo
+from .shell import ContextRunner
 
 SetupMode = t.Literal["missing", "all"]
+
+
+@contextmanager
+def _reported() -> t.Iterator[None]:
+    """
+    Show library errors as a clean CLI failure instead of a traceback.
+    """
+    try:
+        yield
+    except VommitError as error:
+        # Exit prints its message verbatim, so colour it here instead
+        rich.print(f"[red]{error}[/red]")
+        raise Exit(code=1) from error
+
+
+def _notify(message: str) -> None:
+    rich.print(f"[blue]{message}[/blue]")
+
+
+def _project_root(project_dir: str | None) -> Path:
+    return Path(project_dir) if project_dir else Path.cwd()
+
+
+def _report(result: BumpResult) -> None:
+    arrow = f"{result.previous} -> " if result.previous else ""
+    suffix = " [dim](noop)[/dim]" if result.noop else ""
+    rich.print(f"[green]Version {arrow}{result.version}[/green]{suffix}")
+
+    if result.noop and result.entry:
+        rich.print(f"\n[dim]{result.changelog_path}:[/dim]")
+        rich.print(result.entry)
+    if result.noop:
+        return
+
+    if result.commit_message:
+        rich.print(f"[green]Committed[/green] {result.commit_message}")
+    if result.tag:
+        rich.print(f"[green]Tagged[/green] {result.tag}")
 
 
 @task()
@@ -19,7 +68,7 @@ def init(c: Context, project_name: str, non_interactive: bool = False):
 
 @task()
 def setup(
-    _: Context,
+    c: Context,
     non_interactive: bool = False,
     project_dir: str | None = None,
     mode: SetupMode = "missing",
@@ -33,47 +82,84 @@ def setup(
     + Extra option for initializing totally new project?
     - uv init --package <name>
     """
-    config = Config.from_pyproject()
+    root = _project_root(project_dir)
+    pyproject = root / "pyproject.toml"
 
-    if not non_interactive:
-        present_paths = (
-            Config.configured_key_paths()
-            if mode == "missing" and Config.has_pyproject_config()
-            else None
-        )
+    with _reported():
+        config = Config.from_pyproject(root)
 
-        if mode == "missing" and Config.is_complete():
-            rich.print(
-                "[blue]Nothing to configure: existing vommit config is already complete.[/blue]"
+        if not non_interactive:
+            configured = Config.has_pyproject_config(pyproject)
+            present_paths = (
+                Config.configured_key_paths(pyproject)
+                if mode == "missing" and configured
+                else None
             )
-            config.write_to_pyproject()
-            config.changelog.ensure_file(project_dir)
-            return
 
-        config = Config.interactive(config, present_paths=present_paths)
+            if mode == "missing" and Config.is_complete(pyproject):
+                rich.print(
+                    "[blue]Nothing to configure: existing vommit config is already complete.[/blue]"
+                )
+            else:
+                config = Config.interactive(config, present_paths=present_paths)
 
-    config.write_to_pyproject()
-    config.changelog.ensure_file(project_dir)
+        _pin_branch(c, config, root)
+        config.write_to_pyproject(pyproject)
+        if changelog := config.active_changelog:
+            Changelog(settings=changelog, root=root).ensure()
+
+
+def _pin_branch(c: Context, config: Config, root: Path) -> None:
+    """
+    Write the detected branch rather than `<head>`, so later runs are explicit.
+    """
+    if not (git := config.active_git) or git.branch != DERIVE_BRANCH:
+        return
+    repo = GitRepo(runner=ContextRunner(c), root=root)
+    if branch := repo.main_branch(git.origin):
+        git.branch = branch
 
 
 @task()
 def bump(
-    _: Context,
+    c: Context,
     major: bool = False,
     minor: bool = False,
     patch: bool = False,
     prerelease: bool = False,
     noop: bool = False,
     version: str | None = None,
-) -> None:
+    allow_dirty: bool = False,
+) -> str | None:
     """
-    Bump:
-    - ensure no upstream changes (without pulling)
-    - uv version bump
-    - Write changelog
-    - commit + tag
+    Bump the version, write the changelog, then commit and tag.
+
+    Nothing is written until every check has passed, so a failed run leaves the
+    project as it was. Use --noop to see the new version and changelog entry.
     """
-    config = Config.from_pyproject()
+    root = Path.cwd()
+
+    with _reported():
+        result = run_bump(
+            config=Config.from_pyproject(root),
+            runner=ContextRunner(c),
+            root=root,
+            request=BumpRequest(
+                level=select_level(major, minor, patch),
+                version=version,
+                prerelease=prerelease,
+                noop=noop,
+                allow_dirty=allow_dirty,
+            ),
+            notify=_notify,
+        )
+
+    if result is None:
+        rich.print("[yellow]No version-worthy changes found; nothing to bump.[/yellow]")
+        return None
+
+    _report(result)
+    return result.version
 
 
 @task()
@@ -92,7 +178,7 @@ def release(
     - uv build
     - uv publish
     """
-    config = Config.from_pyproject()
+    _config = Config.from_pyproject()
 
 
 # todo: 'init' to make a whole new project? = uv init + setup

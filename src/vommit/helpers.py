@@ -1,4 +1,12 @@
+import typing as t
 from importlib.metadata import version
+
+
+def throw(error: Exception) -> t.Never:
+    """
+    Functional raise, useful for if ... else ... or callbacks.
+    """
+    raise error
 
 
 def canonical_version(package_name: str):

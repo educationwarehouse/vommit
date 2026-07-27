@@ -36,6 +36,21 @@ pythonpath = [
     "src",
 ]
 
+[tool.ruff]
+include = [
+    "src/**/*.py",
+]
+
+[tool.ruff.lint]
+ignore = [
+    "RUF012", # ClassVar changes runtime behavior
+]
+
+[tool.ty.src]
+include = [
+    "src",
+]
+
 [tool.coverage.report]
 exclude_also = [
     '\A(?s:.*# pragma: exclude file.*)\Z',
@@ -90,6 +105,5 @@ feat = "minor"
 fix = "patch"
 perf = "patch"
 docs = "patch"
-
 
 
