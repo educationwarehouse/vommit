@@ -1,10 +1,12 @@
+import dataclasses as dc
 import shlex
 import subprocess
 import typing as t
-from dataclasses import dataclass
+
+from ewok import Context
 
 
-@dataclass(frozen=True)
+@dc.dataclass(frozen=True)
 class CommandResult:
     command: str
     returncode: int
@@ -63,8 +65,8 @@ class ContextRunner:
     Adapts an ewok/invoke Context, so tasks reuse the CLI's own runner config.
     """
 
-    def __init__(self, c: t.Any) -> None:
-        self._context = c
+    def __init__(self, ctx: Context) -> None:
+        self._context = ctx
 
     def run(self, command: str) -> CommandResult:
         result = self._context.run(command, hide=True, warn=True)

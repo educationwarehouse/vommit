@@ -1,7 +1,7 @@
+import dataclasses as dc
 import re
 import shlex
 import typing as t
-from dataclasses import dataclass
 from pathlib import Path
 
 from .commits import split_commit_log
@@ -13,7 +13,7 @@ from .versioning import is_prerelease
 RE_HEAD = re.compile(r"refs/heads/(\S+)")
 
 
-@dataclass(frozen=True)
+@dc.dataclass(frozen=True)
 class GitRepo:
     """
     The git operations vommit needs, each one checked.

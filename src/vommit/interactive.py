@@ -1,7 +1,7 @@
 # pragma: exclude file
 
+import dataclasses as dc
 import typing as t
-from dataclasses import dataclass
 
 import questionary
 from configuraptor import TypedConfig, load_into
@@ -20,7 +20,7 @@ class AnnotatedMeta(t.TypedDict, total=False):
     derive_default: DeriveDefaultSpec
 
 
-@dataclass(frozen=True)
+@dc.dataclass(frozen=True)
 class FieldSpec:
     name: str
     field_type: t.Any

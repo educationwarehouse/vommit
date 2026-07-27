@@ -1,7 +1,7 @@
 import shlex
 import textwrap
 import typing as t
-from dataclasses import dataclass, field
+import dataclasses as dc
 from pathlib import Path
 
 import pytest
@@ -34,15 +34,15 @@ file = "CHANGELOG.md"
 """
 
 
-@dataclass
+@dc.dataclass
 class FakeRunner:
     """
     Answers commands by substring, so a test can fail exactly one git call.
     """
 
-    responses: dict[str, CommandResult] = field(default_factory=dict)
+    responses: dict[str, CommandResult] = dc.field(default_factory=dict)
     default: CommandResult = CommandResult("", 0, "", "")
-    calls: list[str] = field(default_factory=list)
+    calls: list[str] = dc.field(default_factory=list)
 
     def reply(
         self,

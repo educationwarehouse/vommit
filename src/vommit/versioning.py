@@ -1,7 +1,7 @@
+import dataclasses as dc
 import json
 import shlex
 import typing as t
-from dataclasses import dataclass
 from pathlib import Path
 
 import tomlkit
@@ -120,7 +120,7 @@ def plan_bump(
     return token_args or ["--bump", STABLE_BUMP]
 
 
-@dataclass(frozen=True)
+@dc.dataclass(frozen=True)
 class UvProject:
     """
     `uv version`, split into a read, a preview and an apply.

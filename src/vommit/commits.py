@@ -1,6 +1,6 @@
+import dataclasses as dc
 import re
 import typing as t
-from dataclasses import dataclass
 
 VersionBump = t.Literal["major", "minor", "patch"]
 
@@ -17,7 +17,7 @@ RE_COMMIT_HEADER = re.compile(
 RE_BREAKING_CHANGE_FOOTER = re.compile(r"(?im)^(?:BREAKING[ -]CHANGE):\s+.+$")
 
 
-@dataclass(frozen=True)
+@dc.dataclass(frozen=True)
 class CommitHeader:
     """
     The parsed first line of a conventional commit.
@@ -32,7 +32,7 @@ class CommitHeader:
     bang: bool
 
 
-@dataclass(frozen=True)
+@dc.dataclass(frozen=True)
 class CommitEntry:
     """
     A commit as the changelog cares about it.

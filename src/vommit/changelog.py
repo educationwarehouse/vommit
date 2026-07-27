@@ -1,6 +1,6 @@
+import dataclasses as dc
 import datetime as dt
 import typing as t
-from dataclasses import dataclass
 from pathlib import Path
 
 from .commits import BREAKING, CommitEntry
@@ -8,7 +8,7 @@ from .config import ChangelogConfig
 from .errors import VommitError
 
 
-@dataclass(frozen=True)
+@dc.dataclass(frozen=True)
 class ChangelogUpdate:
     """
     A pending changelog write: what the file should contain, but not written yet.
@@ -27,7 +27,7 @@ class ChangelogUpdate:
         return self.path
 
 
-@dataclass(frozen=True)
+@dc.dataclass(frozen=True)
 class Changelog:
     """
     Renders and updates the changelog file described by `ChangelogConfig`.
