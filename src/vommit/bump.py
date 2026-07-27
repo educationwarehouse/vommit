@@ -8,6 +8,7 @@ from .commits import VersionBump, highest_version_bump
 from .config import Config
 from .errors import VommitError
 from .git import GitRepo
+from .helpers import relative_path
 from .shell import Runner
 from .versioning import UvProject, is_prerelease, plan_bump
 
@@ -108,13 +109,6 @@ def select_level(
     return t.cast(VersionBump | None, chosen[0] if chosen else None)
 
 
-def _relative(path: Path, root: Path) -> str:
-    try:
-        return str(path.relative_to(root))
-    except ValueError:
-        return str(path)
-
-
 def run_bump(
     config: Config,
     runner: Runner,
@@ -194,7 +188,7 @@ def run_bump(
 
     touched = [PYPROJECT]
     if update:
-        touched.append(_relative(update.path, root))
+        touched.append(relative_path(update.path, root))
 
     tag = git.format_tag(next_version) if git else None
     commit_message = git.format_commit(next_version) if git else None

@@ -321,9 +321,6 @@ class Config(InteractiveConfig, Defaultable):
 
     confirm: t.Annotated[bool, "Ask before writing a release?"] = True
 
-    # todo:
-    #  - compatibility/migration from old `tool.semantic_release` config
-
     version_bump_map: dict[str, VersionBump] = {
         BREAKING: "major",
         "feat": "minor",
