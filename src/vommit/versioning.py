@@ -56,9 +56,10 @@ def bumped_release(release: Release, level: VersionBump) -> Release:
     major, minor, patch = release
     if level == "major":
         return (major + 1, 0, 0)
-    if level == "minor":
+    elif level == "minor":
         return (major, minor + 1, 0)
-    return (major, minor, patch + 1)
+    else:
+        return (major, minor, patch + 1)
 
 
 def implied_level(release: Release) -> VersionBump:
@@ -71,7 +72,10 @@ def implied_level(release: Release) -> VersionBump:
     _, minor, patch = release
     if patch:
         return "patch"
-    return "minor" if minor else "major"
+    elif minor:
+        return "minor"
+    else:
+        return "major"
 
 
 def _series_covers(claimed: Release, level: VersionBump, baseline: str | None) -> bool:
