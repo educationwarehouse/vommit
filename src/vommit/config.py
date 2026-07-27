@@ -16,6 +16,7 @@ from .commits import (
     parse_commit,
 )
 from .interactive import InteractiveConfig
+from .versioning import DEFAULT_PRERELEASE_TOKEN, PrereleaseToken
 
 TOML_KEY = "tool.vommit"
 
@@ -129,17 +130,47 @@ class GitConfig(TypedConfig, Defaultable):
         """
         return self.tag_format.replace("{version}", "*") if self.tag_format else None
 
+    @property
+    def tag_re(self) -> re.Pattern[str] | None:
+        """
+        `tag_format` inverted, so a tag can be read back as a version.
+        """
+        if not self.tag_format:
+            return None
+        literals = self.tag_format.split("{version}")
+        pattern = "(.+)".join(re.escape(part) for part in literals)
+        return re.compile(rf"^{pattern}$")
+
+    def parse_tag(self, tag: str) -> str | None:
+        """
+        The version inside `tag`, or None if it was not made by `tag_format`.
+
+        Without a `tag_format` the tag is taken to be the version itself, which
+        is the best guess available for repos that tag by hand.
+        """
+        matcher = self.tag_re
+        if matcher is None:
+            return tag
+        match = matcher.match(tag)
+        return match.group(1) if match else None
+
 
 class ChangelogConfig(TypedConfig, Defaultable):
     enabled: t.Annotated[bool, "Enable changelog updates?"] = True
     file: t.Annotated[str, "Changelog file path"] = "CHANGELOG.md"
+
+    # off by default: an entry per rc is noise, and the same changes end up
+    # listed twice once the release lands. Kept aggregated until then instead.
+    include_prereleases: t.Annotated[
+        bool, "Give prereleases their own changelog entry?"
+    ] = False
 
     levels: dict[str, str] = {
         # note: use {} syntax for pluralization
         # 'break' is not a commit type; it collects commits marked as breaking.
         "break": "Breaking Change{s}",
         "feat": "Feature{s}",
-        "fix": "Bug Fix{es}",
+        "fix": "Fix{es}",
         "perf": "Performance",
         "docs": "Documentation",
     }
@@ -192,6 +223,23 @@ class ChangelogConfig(TypedConfig, Defaultable):
 
     def format_entry_title(self, version: str, date: dt.date | None = None) -> str:
         return self.entry_title_format.format(version=version, date=date or today())
+
+    def entry_title_re(self, version: str | None = None) -> re.Pattern[str]:
+        """
+        `entry_title_format` inverted, to find an entry that was written earlier.
+
+        The date is a wildcard: an entry carries the date it was released on,
+        which is rarely the date anyone comes looking for it. Pass a `version` to
+        match one entry, or leave it out to match the start of any entry.
+        """
+        pattern = ""
+        for literal, field, _, _ in string.Formatter().parse(self.entry_title_format):
+            pattern += re.escape(literal)
+            if field == "version" and version is not None:
+                pattern += re.escape(version)
+            elif field is not None:
+                pattern += r".+?"
+        return re.compile(rf"^{pattern}$", flags=re.MULTILINE)
 
     def resolve_path(self, root: str | Path) -> Path:
         changelog_file = Path(self.file)
@@ -266,6 +314,13 @@ class Config(InteractiveConfig, Defaultable):
         bool, "Treat BREAKING CHANGE footer as major bump?"
     ] = True
 
+    # PEP 440 spells these a1/b1/rc1; `uv version --bump` takes the long names.
+    prerelease_token: t.Annotated[
+        PrereleaseToken, "Prerelease segment used by `bump --prerelease`"
+    ] = DEFAULT_PRERELEASE_TOKEN
+
+    confirm: t.Annotated[bool, "Ask before writing a release?"] = True
+
     # todo:
     #  - compatibility/migration from old `tool.semantic_release` config
 
@@ -288,6 +343,17 @@ class Config(InteractiveConfig, Defaultable):
     @property
     def active_pypi(self) -> PypiConfig | None:
         return _if_enabled(self.pypi)
+
+    def tag_version(self, tag: str | None) -> str | None:
+        """
+        The version a tag stands for, per the configured `tag_format`.
+
+        Reads `git` rather than `active_git`: switching git integration off stops
+        vommit from tagging, but says nothing about how existing tags are named.
+        """
+        if not tag:
+            return None
+        return self.git.parse_tag(tag) if self.git else tag
 
     def is_breaking(self, message: str, header: CommitHeader | None) -> bool:
         if self.allow_breaking_footer and has_breaking_footer(message):

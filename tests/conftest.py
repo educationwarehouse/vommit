@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
+import tomlkit
 
 from src.vommit.shell import CommandResult, LocalRunner
 
@@ -109,6 +110,23 @@ class Sandbox:
 
         self.git("remote", "add", "origin", str(self.remote))
         self.git("push", "-u", "origin", branch)
+
+    def set_config(self, section: str, **values: t.Any) -> None:
+        """
+        Add or overwrite keys in a (dotted) `pyproject.toml` section.
+        """
+        path = self.work / "pyproject.toml"
+        document = tomlkit.parse(path.read_text())
+        node: t.Any = document
+        for part in section.split("."):
+            if part not in node:
+                node[part] = tomlkit.table()
+            node = node[part]
+        for key, value in values.items():
+            node[key] = value
+        path.write_text(tomlkit.dumps(document))
+        # committed right away: a bump refuses to run on a dirty pyproject.toml
+        self.commit("chore: configure")
 
     def write(self, relative: str, content: str) -> Path:
         path = self.work / relative

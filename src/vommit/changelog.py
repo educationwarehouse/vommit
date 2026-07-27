@@ -118,6 +118,24 @@ class Changelog:
         # references appearing in commit messages.
         return placeholder_re.sub(lambda _: replacement, content, count=1)
 
+    def remove(self, content: str, version: str) -> str | None:
+        """
+        `content` without `version`'s entry; None when it has no such entry.
+
+        The inverse of `insert`, down to the blank line it leaves behind the
+        placeholder. Only the one entry is touched, so hand-written notes
+        elsewhere in the file survive being undone.
+        """
+        match = self.settings.entry_title_re(version).search(content)
+        if not match:
+            return None
+
+        # the next entry of any version bounds this one; otherwise it runs to EOF
+        following = self.settings.entry_title_re().search(content, match.end())
+        before = content[: match.start()].rstrip("\n")
+        rest = content[following.start() :] if following else ""
+        return f"{before}\n\n{rest}" if rest else f"{before}\n"
+
     def plan(
         self,
         version: str,

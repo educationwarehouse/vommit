@@ -2,7 +2,12 @@ import pytest
 
 from src.vommit.errors import VommitError
 from src.vommit.shell import LocalRunner
-from src.vommit.versioning import UvProject
+from src.vommit.versioning import (
+    UvProject,
+    implied_level,
+    is_prerelease,
+    plan_bump,
+)
 
 from .conftest import FakeRunner
 
@@ -69,3 +74,86 @@ def test_preview_does_not_pass_no_sync(sandbox):
 
     uv.apply_bump("minor")
     assert runner.ran("--no-sync")
+
+
+@pytest.mark.parametrize(
+    "version, expected",
+    [
+        ("1.0.0", False),
+        ("1.0.0rc1", True),
+        ("1.0.0a1", True),
+        ("1.0.0b2", True),
+        ("1.0.0.dev1", True),
+        ("1.0.0.post1", False),
+        ("1.0.0+local", False),
+        ("not-a-version", False),
+        (None, False),
+    ],
+)
+def test_is_prerelease(version, expected):
+    assert is_prerelease(version) is expected
+
+
+@pytest.mark.parametrize(
+    "release, expected",
+    [((1, 0, 0), "major"), ((1, 2, 0), "minor"), ((1, 2, 3), "patch")],
+)
+def test_implied_level(release, expected):
+    assert implied_level(release) == expected
+
+
+def test_plan_bump_from_a_released_version():
+    assert plan_bump("1.0.0", "minor") == ["--bump", "minor"]
+    assert plan_bump("1.0.0", "minor", prerelease_token="rc") == [
+        "--bump",
+        "minor",
+        "--bump",
+        "rc",
+    ]
+
+
+def test_plan_bump_releases_the_version_a_prerelease_was_built_for():
+    # uv's own `--bump minor` would say 1.2.0 here, skipping 1.1.0 entirely
+    assert plan_bump("1.1.0rc1", "minor", baseline="1.0.0") == ["--bump", "stable"]
+    assert plan_bump("1.1.0rc1", "patch", baseline="1.0.0") == ["--bump", "stable"]
+
+
+def test_plan_bump_steps_a_prerelease_series_it_still_agrees_with():
+    assert plan_bump("1.1.0rc1", "patch", baseline="1.0.0", prerelease_token="rc") == [
+        "--bump",
+        "rc",
+    ]
+
+
+def test_plan_bump_restarts_when_a_bigger_change_arrives():
+    assert plan_bump("1.1.0rc1", "major", baseline="1.0.0") == ["--bump", "major"]
+    assert plan_bump("1.0.1rc1", "minor", baseline="1.0.0") == ["--bump", "minor"]
+
+
+def test_plan_bump_without_a_baseline_reads_the_prerelease_shape():
+    # 0.2.0rc1 can only be a minor step, which covers a patch but not a major
+    assert plan_bump("0.2.0rc1", "patch") == ["--bump", "stable"]
+    assert plan_bump("0.2.0rc1", "minor") == ["--bump", "stable"]
+    assert plan_bump("0.2.0rc1", "major") == ["--bump", "major"]
+
+
+def test_plan_bump_refuses_to_reuse_a_released_number():
+    # 1.0.0 is out; a 1.0.0rc1 left behind in pyproject.toml cannot become it
+    assert plan_bump("1.0.0rc1", "patch", baseline="1.0.0") == ["--bump", "patch"]
+
+
+def test_plan_bump_ignores_an_unreadable_current_version():
+    assert plan_bump("dynamic", "patch") == ["--bump", "patch"]
+    assert plan_bump(None, "patch") == ["--bump", "patch"]
+
+
+def test_planned_prerelease_promotion_matches_uv(sandbox):
+    uv = project(sandbox)
+    uv.apply_set("1.1.0rc1")
+
+    assert uv.preview(plan_bump("1.1.0rc1", "minor", baseline="1.0.0")) == "1.1.0"
+    assert (
+        uv.preview(plan_bump("1.1.0rc1", "minor", baseline="1.0.0", prerelease_token="rc"))
+        == "1.1.0rc2"
+    )
+    assert uv.preview(plan_bump("1.1.0rc1", "major", baseline="1.0.0")) == "2.0.0"

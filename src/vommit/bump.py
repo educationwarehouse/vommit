@@ -1,5 +1,5 @@
 import typing as t
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from pathlib import Path
 
@@ -9,12 +9,20 @@ from .config import Config
 from .errors import VommitError
 from .git import GitRepo
 from .shell import Runner
-from .versioning import UvProject
+from .versioning import UvProject, is_prerelease, plan_bump
 
 Notify = t.Callable[[str], None]
+Confirm = t.Callable[["BumpResult"], bool]
 
 PYPROJECT = "pyproject.toml"
 LOCKFILE = "uv.lock"
+
+
+def always(_: t.Any) -> bool:
+    """
+    The default answer for callers that have nobody to ask.
+    """
+    return True
 
 
 @dataclass(frozen=True)
@@ -24,8 +32,12 @@ class BumpRequest:
     prerelease: bool = False
     noop: bool = False
     allow_dirty: bool = False
+    undo: bool = False
 
     def __post_init__(self) -> None:
+        if self.undo:
+            self._reject_alongside_undo()
+            return
         if not self.version:
             return
         if self.level:
@@ -36,6 +48,28 @@ class BumpRequest:
             raise VommitError(
                 f"--version {self.version} sets an exact version; "
                 "--prerelease would be ignored."
+            )
+
+    def _reject_alongside_undo(self) -> None:
+        """
+        --undo takes back the last release; it cannot also aim at a new one.
+        """
+        conflicting = [
+            f"--{name}"
+            for name, given in (
+                ("major", self.level == "major"),
+                ("minor", self.level == "minor"),
+                ("patch", self.level == "patch"),
+                ("prerelease", self.prerelease),
+                ("version", bool(self.version)),
+                ("allow-dirty", self.allow_dirty),
+            )
+            if given
+        ]
+        if conflicting:
+            raise VommitError(
+                f"--undo goes back to the previous release; "
+                f"drop {' and '.join(conflicting)}."
             )
 
 
@@ -49,6 +83,9 @@ class BumpResult:
     commit_message: str | None
     tag: str | None
     noop: bool
+    prerelease: bool = False
+    # declined at the confirmation step; nothing was written, same as a noop
+    cancelled: bool = False
 
 
 def select_level(
@@ -85,13 +122,15 @@ def run_bump(
     request: BumpRequest,
     notify: Notify = lambda _: None,
     today: date | None = None,
+    confirm: Confirm = always,
 ) -> BumpResult | None:
     """
     Bump the version, update the changelog, commit and tag.
 
-    Returns None when the commits since the last release do not warrant a bump.
-    Nothing is written until every step that can fail has been checked, so a
-    missing placeholder or a wrong branch leaves the project untouched.
+    Returns None when the commits since the last release do not warrant a bump,
+    and a `cancelled` result when `confirm` says no. Nothing is written until
+    every step that can fail has been checked, so a missing placeholder or a
+    wrong branch leaves the project untouched.
     """
     git = config.active_git
     changelog_settings = config.active_changelog
@@ -105,8 +144,17 @@ def run_bump(
 
     # reading history is how the bump level is found at all, so it happens even
     # when git integration (branch checks, committing, tagging) is switched off.
+    # only a changelog that lists prereleases has a reason to stop at one: it
+    # has already reported those commits, so repeating them would duplicate.
+    aggregating = not (changelog_settings and changelog_settings.include_prereleases)
     tag_glob = config.git.tag_glob if config.git else None
-    commit_messages = repo.commit_messages_since(repo.last_tag(tag_glob))
+    stable_tag = repo.last_stable_tag(tag_glob, config.tag_version)
+    baseline = config.tag_version(stable_tag)
+
+    # aggregating means the window that feeds the changelog also decides the
+    # level, so a prerelease series that has gone quiet can still be released.
+    since = stable_tag if aggregating else repo.last_tag(tag_glob)
+    commit_messages = repo.commit_messages_since(since)
 
     level = request.level or highest_version_bump(
         config.resolve_version_bump_from_commit(message) for message in commit_messages
@@ -115,11 +163,18 @@ def run_bump(
         return None
 
     previous = project.current_version()
-    next_version = (
-        project.preview_set(request.version)
+    plan = (
+        [request.version]
         if request.version
-        else project.preview_bump(t.cast(VersionBump, level), request.prerelease)
+        else plan_bump(
+            current=previous,
+            level=t.cast(VersionBump, level),
+            baseline=baseline,
+            prerelease_token=config.prerelease_token if request.prerelease else None,
+        )
     )
+    next_version = project.preview(plan)
+    prerelease = is_prerelease(next_version)
 
     changelog = (
         Changelog(settings=changelog_settings, root=root)
@@ -127,7 +182,12 @@ def run_bump(
         else None
     )
     update: ChangelogUpdate | None = None
-    if changelog:
+    if changelog_settings and prerelease and not changelog_settings.include_prereleases:
+        notify(
+            f"{next_version} is a prerelease; its changes stay unlisted until "
+            "the next release."
+        )
+    elif changelog:
         update = changelog.plan(
             next_version, config.commit_entries(commit_messages), today
         )
@@ -153,15 +213,14 @@ def run_bump(
         commit_message=commit_message,
         tag=tag,
         noop=request.noop,
+        prerelease=prerelease,
     )
     if request.noop:
         return result
+    if not confirm(result):
+        return replace(result, noop=True, cancelled=True)
 
-    applied = (
-        project.apply_set(request.version)
-        if request.version
-        else project.apply_bump(t.cast(VersionBump, level), request.prerelease)
-    )
+    applied = project.apply(plan)
     if applied != next_version:
         raise VommitError(
             f"`uv version` produced {applied}, but {next_version} was planned; "

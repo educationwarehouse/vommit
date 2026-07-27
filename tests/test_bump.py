@@ -12,7 +12,7 @@ from .conftest import Sandbox
 TODAY = date(2023, 4, 10)
 
 
-def bump(sandbox: Sandbox, notify=None, **kwargs):
+def bump(sandbox: Sandbox, notify=None, confirm=None, **kwargs):
     return run_bump(
         config=Config.from_pyproject(sandbox.work),
         runner=LocalRunner(),
@@ -20,6 +20,7 @@ def bump(sandbox: Sandbox, notify=None, **kwargs):
         request=BumpRequest(**kwargs),
         notify=notify or (lambda _: None),
         today=TODAY,
+        **({"confirm": confirm} if confirm else {}),
     )
 
 
@@ -81,7 +82,7 @@ def test_bump_writes_changelog_commit_and_tag(sandbox):
         "## v0.2.0 (2023-04-10)\n\n"
         "### Feature\n"
         "* **api:** add endpoint\n\n"
-        "### Bug Fix\n"
+        "### Fix\n"
         "* correct a bug\n"
     )
     assert result.tag == "v0.2.0"
@@ -137,6 +138,129 @@ def test_bump_prerelease(sandbox):
     sandbox.commits("feat: something new")
 
     assert bump(sandbox, prerelease=True).version == "0.2.0rc1"
+
+
+def test_prerelease_stays_out_of_the_changelog(sandbox):
+    sandbox.commits("feat: something new")
+
+    result = bump(sandbox, prerelease=True)
+
+    assert result.prerelease is True
+    assert result.entry is None
+    assert result.changelog_path is None
+    assert not (sandbox.work / "CHANGELOG.md").exists()
+    # the version itself is still bumped, committed and tagged
+    assert sandbox.tags() == ["v0.2.0rc1"]
+
+
+def test_prerelease_says_why_it_wrote_no_entry(sandbox):
+    sandbox.commits("feat: something new")
+    said: list[str] = []
+
+    bump(sandbox, prerelease=True, notify=said.append)
+
+    assert any("stay unlisted" in message for message in said)
+
+
+def test_release_collects_everything_since_the_last_release(sandbox):
+    sandbox.commits("feat: something new")
+    bump(sandbox, prerelease=True)
+    sandbox.commits("fix: correct a bug")
+
+    result = bump(sandbox)
+
+    # the rc series was building towards 0.2.0, so that is where it lands
+    assert result.version == "0.2.0"
+    entry = changelog_of(sandbox)
+    assert "## v0.2.0 (2023-04-10)" in entry
+    # both the prerelease's commit and the one after it
+    assert "* something new" in entry
+    assert "* correct a bug" in entry
+    assert "0.2.0rc1" not in entry
+
+
+def test_release_promotes_a_prerelease_with_nothing_new_behind_it(sandbox):
+    sandbox.commits("feat: something new")
+    bump(sandbox, prerelease=True)
+
+    # no commits since the rc: releasing it is still the point
+    result = bump(sandbox)
+
+    assert result.version == "0.2.0"
+    assert "* something new" in changelog_of(sandbox)
+
+
+def test_a_second_prerelease_steps_the_series(sandbox):
+    sandbox.commits("feat: something new")
+    bump(sandbox, prerelease=True)
+    sandbox.commits("fix: correct a bug")
+
+    # not 0.2.1rc1: the release this series is heading for has not changed
+    assert bump(sandbox, prerelease=True).version == "0.2.0rc2"
+
+
+def test_a_breaking_change_abandons_the_prerelease_series(sandbox):
+    sandbox.commits("feat: something new")
+    bump(sandbox, prerelease=True)
+    sandbox.commits("feat!: drop python 3.12")
+
+    result = bump(sandbox)
+
+    assert result.version == "1.0.0"
+    assert "* something new" in changelog_of(sandbox)
+
+
+def test_including_prereleases_gives_each_one_its_own_entry(sandbox):
+    sandbox.set_config("tool.vommit.changelog", include_prereleases=True)
+    sandbox.commits("feat: something new")
+
+    result = bump(sandbox, prerelease=True)
+
+    assert result.prerelease is True
+    assert "## v0.2.0rc1 (2023-04-10)" in changelog_of(sandbox)
+    assert result.entry is not None
+
+
+def test_including_prereleases_keeps_the_window_at_the_last_tag(sandbox):
+    sandbox.set_config("tool.vommit.changelog", include_prereleases=True)
+    sandbox.commits("feat: something new")
+    bump(sandbox, prerelease=True)
+    sandbox.commits("fix: correct a bug")
+
+    bump(sandbox)
+
+    entry = changelog_of(sandbox)
+    # the feat was already listed under the rc, so the release only adds the fix
+    assert entry.index("* correct a bug") < entry.index("* something new")
+    assert entry.count("* something new") == 1
+
+
+@pytest.mark.parametrize(
+    "token, expected", [("alpha", "0.2.0a1"), ("beta", "0.2.0b1"), ("rc", "0.2.0rc1")]
+)
+def test_the_prerelease_token_is_configurable(sandbox, token, expected):
+    sandbox.set_config("tool.vommit", prerelease_token=token)
+    sandbox.commits("feat: something new")
+
+    assert bump(sandbox, prerelease=True).version == expected
+
+
+def test_a_quiet_prerelease_series_is_releasable_without_a_changelog(sandbox):
+    sandbox.set_config("tool.vommit.changelog", enabled=False)
+    sandbox.commits("feat: something new")
+    bump(sandbox, prerelease=True)
+
+    # nothing new since the rc, but promoting it is still a real bump
+    assert bump(sandbox).version == "0.2.0"
+
+
+def test_an_explicit_prerelease_version_is_treated_as_one(sandbox):
+    sandbox.commits("feat: something new")
+
+    result = bump(sandbox, version="1.0.0rc1")
+
+    assert result.prerelease is True
+    assert result.entry is None
 
 
 def test_breaking_change_bumps_major_and_gets_its_own_section(sandbox):
@@ -294,7 +418,7 @@ def test_a_failed_commit_does_not_leave_a_tag_behind(sandbox):
 def test_a_version_that_shifts_underneath_us_is_caught(sandbox, monkeypatch):
     sandbox.commits("feat: something new")
     monkeypatch.setattr(
-        "src.vommit.versioning.UvProject.apply_bump", lambda *a, **kw: "9.9.9"
+        "src.vommit.versioning.UvProject.apply", lambda *a, **kw: "9.9.9"
     )
 
     with pytest.raises(VommitError, match="changed underneath us"):
@@ -360,3 +484,36 @@ def test_tagging_and_committing_can_be_switched_off(sandbox):
     staged = sorted(line[3:] for line in sandbox.status())
     assert staged == ["CHANGELOG.md", "pyproject.toml", "uv.lock"]
     assert all(line[1] == " " for line in sandbox.status())
+
+
+def test_a_declined_bump_writes_nothing(sandbox):
+    sandbox.commits("feat: something new")
+
+    result = bump(sandbox, confirm=lambda _: False)
+
+    assert result.cancelled is True
+    assert result.noop is True
+    assert result.version == "0.2.0"
+    assert version_of(sandbox) == "0.1.0"
+    assert sandbox.tags() == []
+    assert not (sandbox.work / "CHANGELOG.md").exists()
+    assert sandbox.status() == []
+
+
+def test_confirmation_sees_the_release_it_is_asked_about(sandbox):
+    sandbox.commits("feat: something new")
+    asked: list[str] = []
+
+    bump(sandbox, confirm=lambda result: bool(asked.append(result.version)) or True)
+
+    assert asked == ["0.2.0"]
+    assert version_of(sandbox) == "0.2.0"
+
+
+def test_noop_never_asks(sandbox):
+    sandbox.commits("feat: something new")
+
+    def refuse(_):  # pragma: no cover - must not be reached
+        raise AssertionError("a dry run has nothing to confirm")
+
+    assert bump(sandbox, noop=True, confirm=refuse).noop is True

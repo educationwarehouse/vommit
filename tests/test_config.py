@@ -101,8 +101,8 @@ def test_pluralize_templates():
     assert config.pluralize("feat", 1) == "Feature"
     assert config.pluralize("feat", 2) == "Features"
 
-    assert config.pluralize("fix", 1) == "Bug Fix"
-    assert config.pluralize("fix", 2) == "Bug Fixes"
+    assert config.pluralize("fix", 1) == "Fix"
+    assert config.pluralize("fix", 2) == "Fixes"
 
     assert config.pluralize("perf", 1) == "Performance"
     assert config.pluralize("docs", 2) == "Documentation"
@@ -335,3 +335,35 @@ def test_config_introspection_helpers(tmp_path):
 
     Config.default().write_to_pyproject(pyproject)
     assert Config.is_complete(pyproject) is True
+
+
+def test_parse_tag_inverts_the_tag_format():
+    git = GitConfig.load({})
+
+    assert git.format_tag("1.2.3") == "v1.2.3"
+    assert git.parse_tag("v1.2.3") == "1.2.3"
+    assert git.parse_tag("1.2.3") is None
+    assert git.parse_tag("nightly-1") is None
+
+
+def test_parse_tag_with_a_suffixed_format():
+    git = GitConfig.load({"tag_format": "release/{version}-final"})
+
+    assert git.parse_tag("release/1.2.3-final") == "1.2.3"
+    assert git.parse_tag("release/1.2.3") is None
+
+
+def test_parse_tag_without_a_tag_format():
+    # tagging is off, but existing tags still have to be read somehow
+    git = GitConfig.load({"tag_format": ""})
+
+    assert git.tag_re is None
+    assert git.parse_tag("v1.2.3") == "v1.2.3"
+
+
+def test_prerelease_token_defaults_to_rc():
+    assert Config.default().prerelease_token == "rc"
+
+
+def test_prereleases_are_left_out_of_the_changelog_by_default():
+    assert ChangelogConfig.default().include_prereleases is False

@@ -8,6 +8,7 @@ from .commits import split_commit_log
 from .config import CURRENT_BRANCH, DERIVE_BRANCH, GitConfig
 from .errors import VommitError
 from .shell import CommandResult, LocalRunner, Runner
+from .versioning import is_prerelease
 
 RE_HEAD = re.compile(r"refs/heads/(\S+)")
 
@@ -150,6 +151,35 @@ class GitRepo:
         fallback = self._git("describe", "--tags", "--abbrev=0")
         return fallback.out if fallback.ok else None
 
+    def tags_reachable(self, glob: str | None) -> list[str]:
+        """
+        Tags on this history, newest first.
+
+        Ordered by the date git recorded for the tag rather than by the shape of
+        the history: `git tag` cannot sort topologically, and for the linear
+        release history this is used on the two agree.
+        """
+        match = ["--list", glob] if glob else []
+        result = self._git("tag", "--merged", "HEAD", "--sort=-creatordate", *match)
+        return result.out.splitlines() if result.ok else []
+
+    def last_stable_tag(
+        self,
+        glob: str | None,
+        to_version: t.Callable[[str], str | None],
+    ) -> str | None:
+        """
+        Most recent tag holding a finished release, skipping prereleases.
+
+        This is the changelog's starting point when prereleases are aggregated:
+        everything since the last real release belongs in the next entry.
+        """
+        for tag in self.tags_reachable(glob):
+            version = to_version(tag)
+            if version and not is_prerelease(version):
+                return tag
+        return None
+
     def commit_messages_since(self, since: str | None) -> list[str]:
         commit_range = [f"{since}..HEAD"] if since else []
         result = self._git("log", "-z", "--no-merges", "--format=%B", *commit_range)
@@ -157,6 +187,61 @@ class GitRepo:
             # no commits at all yet
             return []
         return split_commit_log(result.stdout)
+
+    def head_subject(self) -> str:
+        return self._checked(
+            "log", "-1", "--format=%s", action="read the last commit message"
+        ).out
+
+    def tag_commit(self, tag: str) -> str | None:
+        """
+        The commit a tag resolves to, or None if the tag does not exist.
+        """
+        result = self._git(
+            "rev-parse", "--verify", "--quiet", f"refs/tags/{tag}^{{commit}}"
+        )
+        return result.out if result.ok else None
+
+    def head_commit(self) -> str:
+        return self._checked("rev-parse", "HEAD", action="resolve HEAD").out
+
+    def remote_has_tag(self, origin: str, tag: str) -> bool:
+        """
+        Whether `origin` already carries this tag.
+
+        A network call, so only worth making when something is about to be
+        undone: a published tag is one other people may already have fetched.
+        """
+        result = self._git("ls-remote", "--tags", origin, f"refs/tags/{tag}")
+        return bool(result.ok and result.out)
+
+    def remote_branches_containing(self, ref: str) -> list[str]:
+        """
+        Remote-tracking branches that already include `ref`, per the last fetch.
+        """
+        result = self._git("branch", "--remotes", "--contains", ref)
+        if not result.ok:
+            return []
+        return [
+            name
+            for line in result.stdout.splitlines()
+            # skip the symbolic 'origin/HEAD -> origin/main' entry, which names
+            # a branch that is listed on its own anyway
+            if (name := line.strip()) and "->" not in name
+        ]
+
+    def delete_tag(self, name: str) -> None:
+        self._checked("tag", "--delete", name, action=f"delete tag '{name}'")
+
+    def reset_hard(self, ref: str) -> None:
+        self._checked("reset", "--hard", ref, action=f"reset to '{ref}'")
+
+    def file_at(self, ref: str, path: str) -> str | None:
+        """
+        The contents of `path` as of `ref`, or None if it was not there.
+        """
+        result = self._git("show", f"{ref}:{path}")
+        return result.stdout if result.ok else None
 
     def dirty_paths(self, paths: t.Iterable[str]) -> list[str]:
         """
@@ -172,6 +257,17 @@ class GitRepo:
         targets = list(paths)
         if targets:
             self._checked("add", "--", *targets, action="stage the release changes")
+
+    def unstage(self, paths: t.Iterable[str]) -> None:
+        """
+        Drop `paths` from the index, leaving the working tree as it is.
+
+        A file the last commit does not have simply becomes untracked again,
+        which is the honest state for something a release created.
+        """
+        targets = list(paths)
+        if targets:
+            self._checked("reset", "--quiet", "--", *targets, action="unstage")
 
     def commit(self, message: str) -> None:
         self._checked("commit", "-m", message, action="create the release commit")

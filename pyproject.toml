@@ -10,6 +10,7 @@ requires-python = ">=3.13"
 dependencies = [
     "configuraptor >= 2.5.4, < 3",
     "ewok",
+    "packaging",
     "questionary >= 2, < 3",
     "rich",
     "tomlkit",
@@ -66,6 +67,7 @@ badge = "coverage.svg"
 [tool.vommit]
 allow_breaking_bang = true
 allow_breaking_footer = true
+prerelease_token = "beta"
 
 [tool.vommit.git]
 enabled = true
@@ -81,10 +83,12 @@ file = "CHANGELOG.md"
 placeholder = "<!-- next-version-placeholder -->"
 placeholder_regex = "^<!\\-\\-\\s*next\\-version\\-placeholder\\s*\\-\\->$"
 entry_title_format = "## v{version} ({date:%Y-%m-%d})"
+include_prereleases = false
 
 [tool.vommit.changelog.levels]
+break = "Breaking Change{s}"
 feat = "Feature{s}"
-fix = "Bug Fix{es}"
+fix = "Fix{es}"
 perf = "Performance"
 docs = "Documentation"
 
@@ -105,5 +109,6 @@ feat = "minor"
 fix = "patch"
 perf = "patch"
 docs = "patch"
+
 
 

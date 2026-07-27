@@ -4,20 +4,23 @@
 # Anything with logic in it belongs in a module that can be tested without a Context.
 
 import shlex
+import sys
 import typing as t
 from contextlib import contextmanager
 from pathlib import Path
 
+import questionary
 import rich
 from ewok import Context, task
 from invoke import Exit
 
-from .bump import BumpRequest, BumpResult, run_bump, select_level
+from .bump import BumpRequest, BumpResult, always, run_bump, select_level
 from .changelog import Changelog
 from .config import DERIVE_BRANCH, Config
 from .errors import VommitError
 from .git import GitRepo
 from .shell import ContextRunner
+from .undo import UndoPlan, UndoResult, run_undo
 
 SetupMode = t.Literal["missing", "all"]
 
@@ -44,6 +47,10 @@ def _project_root(project_dir: str | None) -> Path:
 
 
 def _report(result: BumpResult) -> None:
+    if result.cancelled:
+        rich.print("[yellow]Cancelled; nothing was written.[/yellow]")
+        return
+
     arrow = f"{result.previous} -> " if result.previous else ""
     suffix = " [dim](noop)[/dim]" if result.noop else ""
     rich.print(f"[green]Version {arrow}{result.version}[/green]{suffix}")
@@ -58,6 +65,78 @@ def _report(result: BumpResult) -> None:
         rich.print(f"[green]Committed[/green] {result.commit_message}")
     if result.tag:
         rich.print(f"[green]Tagged[/green] {result.tag}")
+
+
+def _report_undo(result: UndoResult) -> None:
+    if result.cancelled:
+        rich.print("[yellow]Cancelled; nothing was undone.[/yellow]")
+        return
+
+    plan = result.plan
+    suffix = " [dim](noop)[/dim]" if result.noop else ""
+    rich.print(f"[green]Version {plan.version} -> {plan.previous}[/green]{suffix}")
+    for line in _undo_steps(plan):
+        rich.print(f"  [dim]-[/dim] {line}")
+
+
+def _undo_steps(plan: UndoPlan) -> list[str]:
+    """
+    What undoing this release touches, in the order it happens.
+    """
+    steps = [f"delete tag {plan.tag}"] if plan.tag else []
+    if plan.rewinds_history:
+        return [*steps, f"drop the release commit ({plan.commit})"]
+
+    steps.append(f"set the version back to {plan.previous}")
+    if plan.changelog_path:
+        steps.append(f"remove the {plan.version} entry from {plan.changelog_path.name}")
+    return steps
+
+
+def _bump_question(result: BumpResult) -> str:
+    if result.entry:
+        rich.print(f"\n[dim]{result.changelog_path}:[/dim]")
+        rich.print(result.entry)
+        rich.print("")
+
+    arrow = f"{result.previous} -> " if result.previous else ""
+    extras = [
+        label
+        for label, value in (("commit", result.commit_message), ("tag", result.tag))
+        if value
+    ]
+    tail = f" and {' and '.join(extras)} it" if extras else ""
+    return f"Release {arrow}{result.version}{tail}?"
+
+
+def _undo_question(result: UndoResult) -> str:
+    for line in _undo_steps(result.plan):
+        rich.print(f"  [dim]-[/dim] {line}")
+    return f"Undo {result.plan.version}, back to {result.plan.previous}?"
+
+
+def _asker[ResultT](
+    config: Config,
+    yes: bool,
+    question: t.Callable[[ResultT], str],
+) -> t.Callable[[ResultT], bool]:
+    """
+    The confirmation step, or a straight yes when nobody has to be asked.
+
+    A missing terminal is a no rather than a yes: an unattended run that wanted
+    to go ahead would have passed --yes, and stopping beats releasing by default.
+    """
+    if yes or not config.confirm:
+        return always
+
+    def ask(result: ResultT) -> bool:
+        text = question(result)
+        if not sys.stdin.isatty():
+            rich.print(f"[yellow]{text} No terminal to ask on; pass --yes.[/yellow]")
+            return False
+        return bool(questionary.confirm(text, default=True).ask())
+
+    return ask
 
 
 @task()
@@ -130,18 +209,38 @@ def bump(
     noop: bool = False,
     version: str | None = None,
     allow_dirty: bool = False,
+    undo: bool = False,
+    yes: bool = False,
 ) -> str | None:
     """
     Bump the version, write the changelog, then commit and tag.
 
     Nothing is written until every check has passed, so a failed run leaves the
-    project as it was. Use --noop to see the new version and changelog entry.
+    project as it was. Use --noop to see the new version and changelog entry,
+    --yes to skip the confirmation, and --undo to take the last release back.
     """
     root = Path.cwd()
+    config = Config.from_pyproject(root)
+
+    if undo:
+        return _undo(
+            c,
+            config,
+            root,
+            request=lambda: BumpRequest(
+                level=select_level(major, minor, patch),
+                version=version,
+                prerelease=prerelease,
+                allow_dirty=allow_dirty,
+                undo=True,
+            ),
+            noop=noop,
+            yes=yes,
+        )
 
     with _reported():
         result = run_bump(
-            config=Config.from_pyproject(root),
+            config=config,
             runner=ContextRunner(c),
             root=root,
             request=BumpRequest(
@@ -152,6 +251,7 @@ def bump(
                 allow_dirty=allow_dirty,
             ),
             notify=_notify,
+            confirm=_asker(config, yes, _bump_question),
         )
 
     if result is None:
@@ -159,7 +259,35 @@ def bump(
         return None
 
     _report(result)
+    if result.cancelled:
+        raise Exit(code=1)
     return result.version
+
+
+def _undo(
+    c: Context,
+    config: Config,
+    root: Path,
+    request: t.Callable[[], BumpRequest],
+    noop: bool,
+    yes: bool,
+) -> str | None:
+    with _reported():
+        # built only to have it reject the flags that make no sense here
+        request()
+        result = run_undo(
+            config=config,
+            runner=ContextRunner(c),
+            root=root,
+            noop=noop,
+            notify=_notify,
+            confirm=_asker(config, yes, _undo_question),
+        )
+
+    _report_undo(result)
+    if result.cancelled:
+        raise Exit(code=1)
+    return result.plan.previous
 
 
 @task()

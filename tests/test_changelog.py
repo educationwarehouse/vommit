@@ -39,7 +39,7 @@ def test_render_entry_groups_by_type_and_scope(tmp_path):
         ### Feature
         * **api:** add endpoint
 
-        ### Bug Fixes
+        ### Fixes
         * correct a bug
         * correct another bug"""
     )
@@ -194,3 +194,63 @@ def test_commit_entries_feed_the_renderer(tmp_path):
         ### Feature
         * **api:** add endpoint"""
     )
+
+
+def test_remove_takes_out_one_entry(tmp_path):
+    log = changelog(tmp_path)
+    content = (
+        "# Changelog\n\n"
+        "<!-- next-version-placeholder -->\n\n"
+        "## v0.2.0 (2023-04-10)\n\n"
+        "### Feature\n"
+        "* new thing\n\n"
+        "## v0.1.1 (2023-01-01)\n\n"
+        "### Fix\n"
+        "* old thing\n"
+    )
+
+    assert log.remove(content, "0.2.0") == (
+        "# Changelog\n\n"
+        "<!-- next-version-placeholder -->\n\n"
+        "## v0.1.1 (2023-01-01)\n\n"
+        "### Fix\n"
+        "* old thing\n"
+    )
+
+
+def test_remove_the_only_entry_restores_a_fresh_changelog(tmp_path):
+    log = changelog(tmp_path)
+    content = log.insert(
+        log.initial_content(), log.render_entry("0.2.0", [], date(2023, 4, 10))
+    )
+
+    assert log.remove(content, "0.2.0") == log.initial_content()
+
+
+def test_remove_undoes_exactly_what_insert_did(tmp_path):
+    log = changelog(tmp_path)
+    before = (
+        "# Changelog\n\n"
+        "<!-- next-version-placeholder -->\n\n"
+        "## v0.1.1 (2023-01-01)\n\n"
+        "### Fix\n"
+        "* old thing\n"
+    )
+    added = log.render_entry("0.2.0", [entry("feat", "new thing")], date(2023, 4, 10))
+
+    assert log.remove(log.insert(before, added), "0.2.0") == before
+
+
+def test_remove_ignores_a_version_that_is_not_listed(tmp_path):
+    log = changelog(tmp_path)
+
+    assert log.remove(log.initial_content(), "0.2.0") is None
+
+
+def test_remove_matches_whatever_date_the_entry_carries(tmp_path):
+    log = changelog(tmp_path)
+    content = log.insert(
+        log.initial_content(), log.render_entry("0.2.0", [], date(1999, 12, 31))
+    )
+
+    assert log.remove(content, "0.2.0") == log.initial_content()
