@@ -1,6 +1,6 @@
 import tempfile
 import textwrap
-from datetime import date
+import datetime as dt
 from pathlib import Path
 
 import pytest
@@ -147,7 +147,7 @@ def test_changelog_resolve_path(tmp_path):
 def test_changelog_entry_title_format_default():
     config = ChangelogConfig.default()
     assert (
-        config.format_entry_title(version="1.2.3", date=date(2023, 4, 10))
+        config.format_entry_title(version="1.2.3", date=dt.date(2023, 4, 10))
         == "## v1.2.3 (2023-04-10)"
     )
 
@@ -157,14 +157,14 @@ def test_changelog_entry_title_format_custom_date_spec():
         {"entry_title_format": "## release {version} [{date:%d/%m/%Y}]"},
     )
     assert (
-        config.format_entry_title(version="1.2.3", date=date(2023, 4, 10))
+        config.format_entry_title(version="1.2.3", date=dt.date(2023, 4, 10))
         == "## release 1.2.3 [10/04/2023]"
     )
 
 
 def test_changelog_entry_title_defaults_to_today():
     config = ChangelogConfig.default()
-    assert str(date.today()) in config.format_entry_title("1.2.3")
+    assert str(dt.date.today()) in config.format_entry_title("1.2.3")
 
 
 def test_pypi_defaults():

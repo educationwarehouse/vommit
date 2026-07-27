@@ -1,4 +1,4 @@
-from datetime import date
+import datetime as dt
 
 import pytest
 
@@ -10,7 +10,7 @@ from src.vommit.undo import UndoResult, run_undo
 
 from .conftest import Sandbox
 
-TODAY = date(2023, 4, 10)
+TODAY = dt.date(2023, 4, 10)
 
 
 def bump(sandbox: Sandbox, **kwargs):

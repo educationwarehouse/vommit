@@ -1,5 +1,4 @@
-from datetime import date
-
+import datetime as dt
 import pytest
 
 from src.vommit.bump import BumpRequest, run_bump, select_level
@@ -9,7 +8,7 @@ from src.vommit.shell import LocalRunner
 
 from .conftest import Sandbox
 
-TODAY = date(2023, 4, 10)
+TODAY = dt.date(2023, 4, 10)
 
 
 def bump(sandbox: Sandbox, notify=None, confirm=None, **kwargs):

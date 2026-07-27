@@ -137,7 +137,8 @@ class Sandbox:
     def commit(self, message: str, empty: bool = False) -> None:
         if not empty:
             self.git("add", "-A")
-        self.git("commit", *(["--allow-empty"] if empty else []), "-m", message)
+        extra = ["--allow-empty"] if empty else []
+        self.git("commit", *extra, "-m", message)
 
     def commits(self, *messages: str) -> None:
         for message in messages:

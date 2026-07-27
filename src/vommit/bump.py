@@ -1,6 +1,6 @@
+import dataclasses as dc
+import datetime as dt
 import typing as t
-from dataclasses import dataclass, replace
-from datetime import date
 from pathlib import Path
 
 from .changelog import Changelog, ChangelogUpdate
@@ -25,7 +25,7 @@ def always(_: t.Any) -> bool:
     return True
 
 
-@dataclass(frozen=True)
+@dc.dataclass(frozen=True)
 class BumpRequest:
     level: VersionBump | None = None
     version: str | None = None
@@ -73,7 +73,7 @@ class BumpRequest:
             )
 
 
-@dataclass(frozen=True)
+@dc.dataclass(frozen=True)
 class BumpResult:
     previous: str | None
     version: str
@@ -121,7 +121,7 @@ def run_bump(
     root: Path,
     request: BumpRequest,
     notify: Notify = lambda _: None,
-    today: date | None = None,
+    today: dt.date | None = None,
     confirm: Confirm = always,
 ) -> BumpResult | None:
     """
@@ -192,7 +192,10 @@ def run_bump(
             next_version, config.commit_entries(commit_messages), today
         )
 
-    touched = [PYPROJECT, *([_relative(update.path, root)] if update else [])]
+    touched = [PYPROJECT]
+    if update:
+        touched.append(_relative(update.path, root))
+
     tag = git.format_tag(next_version) if git else None
     commit_message = git.format_commit(next_version) if git else None
 
@@ -218,7 +221,7 @@ def run_bump(
     if request.noop:
         return result
     if not confirm(result):
-        return replace(result, noop=True, cancelled=True)
+        return dc.replace(result, noop=True, cancelled=True)
 
     applied = project.apply(plan)
     if applied != next_version:

@@ -1,5 +1,5 @@
 import textwrap
-from datetime import date
+import datetime as dt
 from pathlib import Path
 
 import pytest
@@ -29,7 +29,7 @@ def test_render_entry_groups_by_type_and_scope(tmp_path):
             entry("fix", "correct another bug"),
             entry("chore", "not shown"),
         ],
-        today=date(2023, 4, 10),
+        today=dt.date(2023, 4, 10),
     )
 
     assert rendered == textwrap.dedent(
@@ -52,7 +52,7 @@ def test_render_entry_promotes_breaking_changes(tmp_path):
             entry("feat", "drop python 3.12", breaking=True),
             entry("feat", "add endpoint"),
         ],
-        today=date(2023, 4, 10),
+        today=dt.date(2023, 4, 10),
     )
 
     assert rendered == textwrap.dedent(
@@ -83,7 +83,7 @@ def test_render_entry_keeps_breaking_under_its_type_when_not_configured(tmp_path
 
 def test_render_entry_without_matching_commits_is_title_only(tmp_path):
     rendered = changelog(tmp_path).render_entry(
-        "1.2.0", [entry("chore", "nothing relevant")], today=date(2023, 4, 10)
+        "1.2.0", [entry("chore", "nothing relevant")], today=dt.date(2023, 4, 10)
     )
     assert rendered == "## v1.2.0 (2023-04-10)"
 
@@ -143,7 +143,7 @@ def test_ensure_creates_once_and_then_leaves_it_alone(tmp_path):
 
 def test_plan_does_not_touch_the_filesystem_until_applied(tmp_path):
     log = changelog(tmp_path)
-    update = log.plan("1.0.0", [entry("feat", "something")], today=date(2023, 4, 10))
+    update = log.plan("1.0.0", [entry("feat", "something")], today=dt.date(2023, 4, 10))
 
     assert not log.path.exists()
     assert "## v1.0.0 (2023-04-10)" in update.entry
@@ -181,7 +181,7 @@ def test_commit_entries_feed_the_renderer(tmp_path):
     )
 
     rendered = Changelog(settings=config.changelog, root=tmp_path).render_entry(
-        "1.0.0", entries, today=date(2023, 4, 10)
+        "1.0.0", entries, today=dt.date(2023, 4, 10)
     )
 
     assert rendered == textwrap.dedent(
@@ -221,7 +221,7 @@ def test_remove_takes_out_one_entry(tmp_path):
 def test_remove_the_only_entry_restores_a_fresh_changelog(tmp_path):
     log = changelog(tmp_path)
     content = log.insert(
-        log.initial_content(), log.render_entry("0.2.0", [], date(2023, 4, 10))
+        log.initial_content(), log.render_entry("0.2.0", [], dt.date(2023, 4, 10))
     )
 
     assert log.remove(content, "0.2.0") == log.initial_content()
@@ -236,7 +236,7 @@ def test_remove_undoes_exactly_what_insert_did(tmp_path):
         "### Fix\n"
         "* old thing\n"
     )
-    added = log.render_entry("0.2.0", [entry("feat", "new thing")], date(2023, 4, 10))
+    added = log.render_entry("0.2.0", [entry("feat", "new thing")], dt.date(2023, 4, 10))
 
     assert log.remove(log.insert(before, added), "0.2.0") == before
 
@@ -250,7 +250,7 @@ def test_remove_ignores_a_version_that_is_not_listed(tmp_path):
 def test_remove_matches_whatever_date_the_entry_carries(tmp_path):
     log = changelog(tmp_path)
     content = log.insert(
-        log.initial_content(), log.render_entry("0.2.0", [], date(1999, 12, 31))
+        log.initial_content(), log.render_entry("0.2.0", [], dt.date(1999, 12, 31))
     )
 
     assert log.remove(content, "0.2.0") == log.initial_content()

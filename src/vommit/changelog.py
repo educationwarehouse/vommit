@@ -1,6 +1,6 @@
+import datetime as dt
 import typing as t
 from dataclasses import dataclass
-from datetime import date
 from pathlib import Path
 
 from .commits import BREAKING, CommitEntry
@@ -74,7 +74,7 @@ class Changelog:
         self,
         version: str,
         commits: t.Iterable[CommitEntry],
-        today: date | None = None,
+        today: dt.date | None = None,
     ) -> str:
         """
         Build a changelog block for `version`, grouping commits by level.
@@ -140,7 +140,7 @@ class Changelog:
         self,
         version: str,
         commits: t.Iterable[CommitEntry],
-        today: date | None = None,
+        today: dt.date | None = None,
     ) -> ChangelogUpdate:
         entry = self.render_entry(version, commits, today)
         return ChangelogUpdate(

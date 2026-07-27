@@ -1,5 +1,5 @@
+import dataclasses as dc
 import typing as t
-from dataclasses import dataclass, replace
 from pathlib import Path
 
 from .bump import LOCKFILE, PYPROJECT, Notify, always
@@ -11,7 +11,7 @@ from .shell import Runner
 from .versioning import UvProject
 
 
-@dataclass(frozen=True)
+@dc.dataclass(frozen=True)
 class UndoPlan:
     """
     What taking back the last release would involve, before any of it happens.
@@ -40,7 +40,7 @@ class UndoPlan:
         return (PYPROJECT, LOCKFILE, *changelog)
 
 
-@dataclass(frozen=True)
+@dc.dataclass(frozen=True)
 class UndoResult:
     plan: UndoPlan
     noop: bool = False
@@ -119,7 +119,7 @@ def run_undo(
     if noop:
         return result
     if not confirm(result):
-        return replace(result, noop=True, cancelled=True)
+        return dc.replace(result, noop=True, cancelled=True)
 
     if plan.tag:
         # first, so a failure halfway leaves the commit findable by its tag
