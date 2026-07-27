@@ -49,6 +49,47 @@ coverage = 100
 badge = "coverage.svg"
 
 [tool.vommit]
+allow_breaking_bang = true
+allow_breaking_footer = true
 
 [tool.vommit.git]
-enabled = false
+enabled = true
+origin = "origin"
+branch = "vommit/staging"
+on_wrong_branch = "error"
+tag_format = "v{version}"
+commit_format = "{version}"
+
+[tool.vommit.changelog]
+enabled = true
+file = "CHANGELOG.md"
+placeholder = "<!-- next-version-placeholder -->"
+placeholder_regex = "^<!\\-\\-\\s*next\\-version\\-placeholder\\s*\\-\\->$"
+entry_title_format = "## v{version} ({date:%Y-%m-%d})"
+
+[tool.vommit.changelog.levels]
+feat = "Feature{s}"
+fix = "Bug Fix{es}"
+perf = "Performance"
+docs = "Documentation"
+
+[tool.vommit.pypi]
+enabled = true
+username = "__token__"
+use_keyring = true
+
+[tool.vommit.commands]
+clean = "rm -r ./dist"
+build = "uv build"
+publish = "uv publish"
+release = "{clean} && {build} && {publish}"
+
+[tool.vommit.version_bump_map]
+break = "major"
+feat = "minor"
+fix = "patch"
+perf = "patch"
+docs = "patch"
+
+
+
