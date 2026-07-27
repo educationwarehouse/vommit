@@ -2,6 +2,34 @@
 
 > Vommit Oversees Making & Managing Installable Things
 
+## Getting started
+
+Install Vommit into the active environment:
+
+```bash
+uv pip install vommit
+```
+
+For a global installation, you can use something like [uvenv](https://pypi.org/project/uvenv/), `pipx`, or `uv tool`:
+
+```bash
+uvenv install vommit
+# alternatively: pipx install vommit
+# alternatively: uv tool install vommit
+```
+
+From a Python project directory, create or complete the Vommit configuration interactively:
+
+```bash
+vommit setup
+```
+
+To see all available commands and options:
+
+```bash
+vommit --help
+```
+
 ## Migrating from python-semantic-release v7
 
 ```bash
@@ -9,54 +37,18 @@ vommit migrate
 ```
 
 Reads `[tool.semantic_release]`, reports what survives the translation, and asks what to do with the
-result:
+result. Choose to review the translated settings, write them as-is, or stop; nothing is written
+before that choice, so a plain run doubles as a dry run. Use `--yes` to accept the translation and
+follow-up changes, `--on-unsupported=error` to refuse unsupported settings, or `=skip` to shorten the
+report.
 
-- **interactive** — walk through the settings, pre-filled from v7; you are only asked about what v7
-  never covered.
-- **copy** — write the translated config as it stands.
-- **stop** — write nothing. Since the report comes first, a plain run doubles as a dry run.
+Supported settings are mapped to `[tool.vommit]`; values that have no equivalent are reported rather
+than silently discarded. Migration refuses non-angular commit parsers, non-`[project].version`
+`version_toml` targets, and `version_pattern`, because those would produce an unusable release setup.
 
-Then, if the project needs them, two follow-up questions: making the version bumpable, and removing
-the old config.
-
-### What it translates
-
-Settings map across where vommit has an equivalent: `branch`, `tag_format`, `commit_subject`,
-`changelog_file`, `changelog_placeholder`, `changelog_sections`, `build_command`, `dist_path`,
-`prerelease_tag`, the upload switches, and the four `parser_angular_*` keys that decide which commit
-types release.
-
-Unset keys come across too. v7 resolved them against its own defaults, and your release history was
-produced with those — so a project that configured nothing still gets v7's placeholder, v7's
-prerelease token and v7's bump map, not vommit's.
-
-Anything without an equivalent is reported rather than dropped quietly: forge integration, token
-variables, the emoji parser settings, `major_on_zero`, and so on. Unknown keys are reported with a
-suggestion — v7 ignored typos silently, so a config can carry one for years without anyone noticing.
-
-Pass `--on-unsupported=error` to refuse a config vommit cannot fully honour, or `=skip` to keep the
-report short.
-
-### What it refuses
-
-Three shapes are refused before anything is written, because a config that looks migrated but can
-never bump is worse than no config at all:
-
-- a `commit_parser` other than the angular one — vommit reads conventional commits only, and
-  migrating would silently change which commits count as a release
-- `version_toml` pointing anywhere other than `[project].version` (Poetry)
-- `version_pattern`, which puts the version behind an arbitrary regex
-
-### Dynamic versions
-
-`uv version` cannot bump a project that declares `dynamic = ["version"]`, whatever the build backend
-— and that is the usual v7 shape, since `version_variable` exists precisely because the backend reads
-the version out of a source file.
-
-For hatchling and setuptools, `migrate` offers to fix it in one step: read the current version out of
-the `version_variable` file (falling back to the latest tag), write it as a static
-`[project].version`, drop `dynamic` and the backend's version hook, and point the source file at the
-installed metadata instead:
+If the project has a dynamic version, hatchling and setuptools projects can be fixed during migration:
+the current version is frozen into `[project].version`, the backend hook is removed, and configured
+version files are changed to read installed metadata:
 
 ```python
 from importlib.metadata import version
@@ -64,11 +56,4 @@ from importlib.metadata import version
 __version__ = version(__package__)
 ```
 
-Both halves happen together. Rewriting `__version__` while the backend still reads its version from
-that file would leave the package unbuildable.
-
-### Cleaning up
-
-Last question, defaulting to yes: remove `[tool.semantic_release]` and the `python-semantic-release`
-dependency. Two live release configs in one file is the state worth not leaving behind — whichever
-tool runs next looks authoritative, and neither is.
+The migration can then remove `[tool.semantic_release]` and the `python-semantic-release` dependency.
