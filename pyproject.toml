@@ -10,6 +10,7 @@ requires-python = ">=3.13"
 dependencies = [
     "configuraptor >= 2.5.4, < 3",
     "ewok",
+    "packaging",
     "questionary >= 2, < 3",
     "rich",
     "tomlkit",
@@ -36,6 +37,21 @@ pythonpath = [
     "src",
 ]
 
+[tool.ruff]
+include = [
+    "src/**/*.py",
+]
+
+[tool.ruff.lint]
+ignore = [
+    "RUF012", # ClassVar changes runtime behavior
+]
+
+[tool.ty.src]
+include = [
+    "src",
+]
+
 [tool.coverage.report]
 exclude_also = [
     '\A(?s:.*# pragma: exclude file.*)\Z',
@@ -49,6 +65,50 @@ coverage = 100
 badge = "coverage.svg"
 
 [tool.vommit]
+allow_breaking_bang = true
+allow_breaking_footer = true
+prerelease_token = "beta"
 
 [tool.vommit.git]
-enabled = false
+enabled = true
+origin = "origin"
+branch = "vommit/staging"
+on_wrong_branch = "error"
+tag_format = "v{version}"
+commit_format = "{version}"
+
+[tool.vommit.changelog]
+enabled = true
+file = "CHANGELOG.md"
+placeholder = "<!-- next-version-placeholder -->"
+placeholder_regex = "^<!\\-\\-\\s*next\\-version\\-placeholder\\s*\\-\\->$"
+entry_title_format = "## v{version} ({date:%Y-%m-%d})"
+include_prereleases = false
+
+[tool.vommit.changelog.levels]
+break = "Breaking Change{s}"
+feat = "Feature{s}"
+fix = "Fix{es}"
+perf = "Performance"
+docs = "Documentation"
+
+[tool.vommit.pypi]
+enabled = true
+username = "__token__"
+use_keyring = true
+
+[tool.vommit.commands]
+clean = "rm -r ./dist"
+build = "uv build"
+publish = "uv publish"
+release = "{clean} && {build} && {publish}"
+
+[tool.vommit.version_bump_map]
+break = "major"
+feat = "minor"
+fix = "patch"
+perf = "patch"
+docs = "patch"
+
+
+

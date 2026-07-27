@@ -1,14 +1,11 @@
 # pragma: exclude file
 
+import dataclasses as dc
 import typing as t
-from dataclasses import dataclass
 
 import questionary
 from configuraptor import TypedConfig, load_into
 from configuraptor.helpers import is_optional
-
-_ConfigT = t.TypeVar("_ConfigT", bound=TypedConfig)
-
 
 DeriveDefaultSpec = t.TypedDict(
     "DeriveDefaultSpec",
@@ -23,7 +20,7 @@ class AnnotatedMeta(t.TypedDict, total=False):
     derive_default: DeriveDefaultSpec
 
 
-@dataclass(frozen=True)
+@dc.dataclass(frozen=True)
 class FieldSpec:
     name: str
     field_type: t.Any
@@ -206,20 +203,23 @@ def _unwrap_annotated(tp: t.Any) -> tuple[t.Any, AnnotatedMeta]:
 
 
 def _enabled_field_name(fields: list[FieldSpec]) -> FieldSpec | None:
-    for field in fields:
-        # fixme: next
-        if field.name == "enabled" and field.field_type is bool:
-            return field
-    return None
+    return next(
+        (
+            field
+            for field in fields
+            if field.name == "enabled" and field.field_type is bool
+        ),
+        None,
+    )
 
 
-def _interactive_build(
-    cls: type[_ConfigT],
+def _interactive_build[ConfigT: TypedConfig](
+    cls: type[ConfigT],
     depth: int = 0,
-    defaults: _ConfigT | None = None,
+    defaults: ConfigT | None = None,
     present_paths: set[str] | None = None,
     path_prefix: str = "",
-) -> _ConfigT:
+) -> ConfigT:
     values: dict[str, t.Any] = {}
     hints = t.get_type_hints(cls, include_extras=True)
     fields: list[FieldSpec] = []
@@ -298,7 +298,6 @@ def _interactive_build(
                 values[field_name] = {} if container_kind is dict else []
             continue
 
-
         typed_config_type = _is_typed_config_type(field_type)
 
         if typed_config_type:
@@ -308,10 +307,7 @@ def _interactive_build(
                 if isinstance(maybe_nested_defaults, TypedConfig):
                     nested_defaults = maybe_nested_defaults
                 elif is_optional(field_type) and not maybe_nested_defaults:
-                    nested_defaults = t.cast(
-                        TypedConfig,
-                        load_into(typed_config_type, {"enabled": False}),
-                    )
+                    nested_defaults = load_into(typed_config_type, {"enabled": False})
 
             values[field_name] = _interactive_build(
                 typed_config_type,
@@ -354,7 +350,7 @@ def _interactive_build(
         ):
             skip_remaining = True
 
-    return t.cast(_ConfigT, load_into(cls, values))
+    return load_into(cls, values)
 
 
 def _interactive_key_paths(
@@ -386,10 +382,10 @@ def _interactive_key_paths(
 class InteractiveConfig(TypedConfig):
     @classmethod
     def interactive(
-        cls: type[_ConfigT],
-        defaults: _ConfigT | None = None,
+        cls,
+        defaults: t.Self | None = None,
         present_paths: set[str] | None = None,
-    ) -> _ConfigT:
+    ) -> t.Self:
         return _interactive_build(cls, defaults=defaults, present_paths=present_paths)
 
     @classmethod

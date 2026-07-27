@@ -1,63 +1,52 @@
+import datetime as dt
 import re
-import shlex
 import string
-import subprocess
 import typing as t
-from datetime import date
 from pathlib import Path
 
 import tomlkit
 from configuraptor import Defaultable, TypedConfig
 
+from .commits import (
+    BREAKING,
+    CommitEntry,
+    CommitHeader,
+    VersionBump,
+    has_breaking_footer,
+    parse_commit,
+)
 from .interactive import InteractiveConfig
+from .versioning import DEFAULT_PRERELEASE_TOKEN, PrereleaseToken
 
 TOML_KEY = "tool.vommit"
-DERIVE_BRANCH = "<head>"
-VersionBump = t.Literal["major", "minor", "patch"]
 
-RE_HEAD = re.compile(r"refs/heads/(\S+)")
-RE_COMMIT_HEADER = re.compile(
-    r"^(?P<type>[A-Za-z][\w-]*)(?P<bang_before_scope>!)?"
-    r"(?:\((?P<scope>[^)]+)\))?(?P<bang_after_scope>!)?:",
-)
-RE_BREAKING_CHANGE_FOOTER = re.compile(r"(?im)^(?:BREAKING[ -]CHANGE):\s+.+$")
+# special branch values, resolved by `GitRepo.resolve_branch`
+DERIVE_BRANCH: t.Final = "<head>"  # look up the main branch (remote, then local)
+CURRENT_BRANCH: t.Final = "<current>"  # release from whichever branch we are on
+
 RE_WHITESPACE_RUN = re.compile(r"\s+")
 
 
-def bash(command: str) -> tuple[int, str, str]:
-    pipes = subprocess.Popen(
-        shlex.split(command),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-
-    stdout = pipes.stdout.read().decode() if pipes.stdout else ""
-    stderr = pipes.stderr.read().decode() if pipes.stderr else ""
-
-    return pipes.returncode, stdout, stderr
-
-
-def throw(error: Exception) -> t.Never:
-    """
-    Functional raise, useful for if ... else ... or callbacks.
-    """
-    raise error
+def today(tz: dt.tzinfo | None = None) -> dt.date:
+    return dt.datetime.now(tz=tz).date()
 
 
 def _to_plain_mapping(value: t.Any) -> t.Any:
     if isinstance(value, dict):
         return {k: _to_plain_mapping(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple)):
+    elif isinstance(value, (list, tuple)):
         return [_to_plain_mapping(v) for v in value]
-    if hasattr(value, "__dict__"):
+    elif hasattr(value, "__dict__"):
         if getattr(value, "enabled", None) is False:
             return {"enabled": False}
+
         return {
             k: _to_plain_mapping(v)
             for k, v in vars(value).items()
             if not k.startswith("_")
         }
-    return value
+    else:
+        return value
 
 
 def _ensure_toml_table(parent: t.Any, key: str) -> t.Any:
@@ -97,36 +86,12 @@ def _collect_leaf_key_paths(data: dict[str, t.Any], prefix: str = "") -> set[str
     return paths
 
 
-def find_main_branch_upstream(origin: str = "origin") -> str | None:
-    origin = shlex.quote(origin)
-    _, stdout, _ = bash(f"git ls-remote --symref {origin} HEAD")
-
-    match = RE_HEAD.search(stdout)
-    return match.group(1) if match else None
-
-
-def find_main_branch_local():
-    _, stdout, _ = bash("git config --get init.defaultBranch")
-    return stdout.strip()
-
-
-def find_main_branch(
-    origin: str,
-    remote: bool = True,
-    local: bool = True,
-) -> str | None:
-    return (
-        (remote and find_main_branch_upstream(origin))
-        or (local and find_main_branch_local())
-        or None
-    )
-
-
 class GitConfig(TypedConfig, Defaultable):
     enabled: t.Annotated[bool, "Enable git integration?"] = True
     origin: t.Annotated[str, "Git remote name"] = "origin"
 
-    # special '<head>' does lookup (first remote, then local config)
+    # '<head>' looks the main branch up (first remote, then local config),
+    # '<current>' releases from whichever branch is checked out.
     branch: t.Annotated[
         str | t.Literal["<head>", "<current>"],
         "Release branch (<head> to auto-detect; <current> to stay on the branch)",
@@ -144,33 +109,68 @@ class GitConfig(TypedConfig, Defaultable):
         str | None, "Git commit message format (empty to disable)"
     ] = "{version}"
 
-    def __post_init__(self):
-        if self.branch == DERIVE_BRANCH:
-            self.branch = find_main_branch(
-                self.origin,
-                remote=True,
-                local=True,
-            ) or throw(
-                ValueError(
-                    "main git branch could not be derived; Please set it via `tool.vommit.git.branch`",
-                ),
-            )
-
     def format_tag(self, version: str) -> str | None:
-        return self.tag_format and self.tag_format.format(version=version)
+        """
+        None when tagging is switched off (empty or missing `tag_format`).
+        """
+        return self.tag_format.format(version=version) if self.tag_format else None
 
     def format_commit(self, version: str) -> str | None:
-        return self.commit_format and self.commit_format.format(version=version)
+        """
+        None when committing is switched off (empty or missing `commit_format`).
+        """
+        return (
+            self.commit_format.format(version=version) if self.commit_format else None
+        )
+
+    @property
+    def tag_glob(self) -> str | None:
+        """
+        Shell glob matching any tag produced by `tag_format`, for `git describe --match`.
+        """
+        return self.tag_format.replace("{version}", "*") if self.tag_format else None
+
+    @property
+    def tag_re(self) -> re.Pattern[str] | None:
+        """
+        `tag_format` inverted, so a tag can be read back as a version.
+        """
+        if not self.tag_format:
+            return None
+        literals = self.tag_format.split("{version}")
+        pattern = "(.+)".join(re.escape(part) for part in literals)
+        return re.compile(rf"^{pattern}$")
+
+    def parse_tag(self, tag: str) -> str | None:
+        """
+        The version inside `tag`, or None if it was not made by `tag_format`.
+
+        Without a `tag_format` the tag is taken to be the version itself, which
+        is the best guess available for repos that tag by hand.
+        """
+        matcher = self.tag_re
+        if matcher is None:
+            return tag
+        match = matcher.match(tag)
+        return match.group(1) if match else None
 
 
 class ChangelogConfig(TypedConfig, Defaultable):
     enabled: t.Annotated[bool, "Enable changelog updates?"] = True
     file: t.Annotated[str, "Changelog file path"] = "CHANGELOG.md"
 
+    # off by default: an entry per rc is noise, and the same changes end up
+    # listed twice once the release lands. Kept aggregated until then instead.
+    include_prereleases: t.Annotated[
+        bool, "Give prereleases their own changelog entry?"
+    ] = False
+
     levels: dict[str, str] = {
         # note: use {} syntax for pluralization
+        # 'break' is not a commit type; it collects commits marked as breaking.
+        "break": "Breaking Change{s}",
         "feat": "Feature{s}",
-        "fix": "Bug Fix{es}",
+        "fix": "Fix{es}",
         "perf": "Performance",
         "docs": "Documentation",
     }
@@ -193,53 +193,59 @@ class ChangelogConfig(TypedConfig, Defaultable):
         "## v{version} ({date:%Y-%m-%d})"
     )
 
-    def __post_init__(self):
-        effective_regex = (
-            self.build_placeholder_regex(self.placeholder)
-            if self.placeholder_regex in {"", "<auto>"}
-            else self.placeholder_regex
-        )
-        self._placeholder_re = re.compile(effective_regex, flags=re.MULTILINE)
+    @property
+    def placeholder_re(self) -> re.Pattern[str]:
+        """
+        Derived lazily: `__post_init__` does not run for configs nested in a
+        parent `Config.load`, so anything derived at init time is unreliable.
+        """
+        cached = getattr(self, "_placeholder_re", None)
+        if cached is None:
+            cached = re.compile(self.effective_placeholder_regex, flags=re.MULTILINE)
+            self._placeholder_re = cached
+        return cached
+
+    @property
+    def effective_placeholder_regex(self) -> str:
+        if self.placeholder_regex in {"", "<auto>"}:
+            return self.build_placeholder_regex(self.placeholder)
+        return self.placeholder_regex
 
     @staticmethod
     def build_placeholder_regex(placeholder: str) -> str:
-        escaped = re.escape(placeholder.strip())
-        flexible_whitespace = RE_WHITESPACE_RUN.sub(r"\\s*", escaped)
+        # escape each chunk separately so re.escape never touches the
+        # whitespace itself (it would keep the literal space, doubling
+        # the backslash once the pattern gets substituted in below).
+        # horizontal whitespace only: a marker lives on one line.
+        chunks = RE_WHITESPACE_RUN.split(placeholder.strip())
+        flexible_whitespace = r"[ \t]+".join(re.escape(chunk) for chunk in chunks)
         return rf"^{flexible_whitespace}$"
 
-    def apply_placeholder(self, changelog: str, to_insert: str) -> str | None:
-        # Keep marker and insert content right below it.
-        match = self._placeholder_re.search(changelog)
-        if not match:
-            return None
+    def format_entry_title(self, version: str, date: dt.date | None = None) -> str:
+        return self.entry_title_format.format(version=version, date=date or today())
 
-        marker = match.group(0)
-        insertion = to_insert.strip("\n")
-        replacement = f"{marker}\n\n{insertion}"
+    def entry_title_re(self, version: str | None = None) -> re.Pattern[str]:
+        """
+        `entry_title_format` inverted, to find an entry that was written earlier.
 
-        return self._placeholder_re.sub(replacement, changelog, count=1)
+        The date is a wildcard: an entry carries the date it was released on,
+        which is rarely the date anyone comes looking for it. Pass a `version` to
+        match one entry, or leave it out to match the start of any entry.
+        """
+        pattern = ""
+        for literal, field, _, _ in string.Formatter().parse(self.entry_title_format):
+            pattern += re.escape(literal)
+            if field == "version" and version is not None:
+                pattern += re.escape(version)
+            elif field is not None:
+                pattern += r".+?"
+        return re.compile(rf"^{pattern}$", flags=re.MULTILINE)
 
-    def format_entry_title(self, version: str, today: date | None = None) -> str:
-        return self.entry_title_format.format(
-            version=version, date=today or date.today()
-        )
-
-    def ensure_file(self, base_dir: str | Path | None = None) -> Path | None:
-        if not self.enabled:
-            return None
-
-        base = Path(base_dir) if base_dir is not None else Path.cwd()
+    def resolve_path(self, root: str | Path) -> Path:
         changelog_file = Path(self.file)
-        if not changelog_file.is_absolute():
-            changelog_file = base / changelog_file
-
-        if not changelog_file.exists():
-            changelog_file.parent.mkdir(parents=True, exist_ok=True)
-            with changelog_file.open("w") as f:
-                f.write("# Changelog\n\n")
-                f.write(f"{self.placeholder}\n")
-
-        return changelog_file
+        if changelog_file.is_absolute():
+            return changelog_file
+        return Path(root) / changelog_file
 
     def pluralize(self, level: str, count: int) -> str:
         template = self.levels[level]
@@ -283,6 +289,16 @@ class CommandConfig(TypedConfig, Defaultable):
         )
 
 
+def _if_enabled[SectionT: TypedConfig](section: SectionT | None) -> SectionT | None:
+    """
+    A section is off when it is absent *or* explicitly disabled; callers should
+    not have to know that both spellings exist.
+    """
+    return (
+        section if section is not None and getattr(section, "enabled", True) else None
+    )
+
+
 class Config(InteractiveConfig, Defaultable):
     git: t.Annotated[GitConfig | None, "Git settings"]
     changelog: t.Annotated[ChangelogConfig | None, "Changelog settings"]
@@ -298,16 +314,51 @@ class Config(InteractiveConfig, Defaultable):
         bool, "Treat BREAKING CHANGE footer as major bump?"
     ] = True
 
+    # PEP 440 spells these a1/b1/rc1; `uv version --bump` takes the long names.
+    prerelease_token: t.Annotated[
+        PrereleaseToken, "Prerelease segment used by `bump --prerelease`"
+    ] = DEFAULT_PRERELEASE_TOKEN
+
+    confirm: t.Annotated[bool, "Ask before writing a release?"] = True
+
     # todo:
     #  - compatibility/migration from old `tool.semantic_release` config
 
     version_bump_map: dict[str, VersionBump] = {
-        "break": "major",
+        BREAKING: "major",
         "feat": "minor",
         "fix": "patch",
         "perf": "patch",
         "docs": "patch",
     }
+
+    @property
+    def active_git(self) -> GitConfig | None:
+        return _if_enabled(self.git)
+
+    @property
+    def active_changelog(self) -> ChangelogConfig | None:
+        return _if_enabled(self.changelog)
+
+    @property
+    def active_pypi(self) -> PypiConfig | None:
+        return _if_enabled(self.pypi)
+
+    def tag_version(self, tag: str | None) -> str | None:
+        """
+        The version a tag stands for, per the configured `tag_format`.
+
+        Reads `git` rather than `active_git`: switching git integration off stops
+        vommit from tagging, but says nothing about how existing tags are named.
+        """
+        if not tag:
+            return None
+        return self.git.parse_tag(tag) if self.git else tag
+
+    def is_breaking(self, message: str, header: CommitHeader | None) -> bool:
+        if self.allow_breaking_footer and has_breaking_footer(message):
+            return True
+        return bool(self.allow_breaking_bang and header and header.bang)
 
     def resolve_version_bump(self, change_level: str) -> VersionBump | None:
         return self.version_bump_map.get(change_level)
@@ -316,22 +367,32 @@ class Config(InteractiveConfig, Defaultable):
         self,
         commit_subject: str,
     ) -> VersionBump | None:
-        commit_text = commit_subject.strip()
-        if self.allow_breaking_footer and RE_BREAKING_CHANGE_FOOTER.search(commit_text):
+        header = parse_commit(commit_subject)
+        if self.is_breaking(commit_subject, header):
             return "major"
-
-        header = commit_text.splitlines()[0] if commit_text.splitlines() else ""
-        match = RE_COMMIT_HEADER.match(header)
-        if not match:
+        if not header:
             return None
 
-        if self.allow_breaking_bang and (
-            match.group("bang_before_scope") or match.group("bang_after_scope")
-        ):
-            return "major"
+        return self.resolve_version_bump(header.type)
 
-        change_level = match.group("type").lower()
-        return self.resolve_version_bump(change_level)
+    def commit_entries(self, messages: t.Iterable[str]) -> list[CommitEntry]:
+        """
+        Conventional commits, in log order, annotated with breaking-change policy.
+        """
+        entries = []
+        for message in messages:
+            header = parse_commit(message)
+            if not header or not header.description:
+                continue
+            entries.append(
+                CommitEntry(
+                    type=header.type,
+                    scope=header.scope,
+                    description=header.description,
+                    breaking=self.is_breaking(message, header),
+                )
+            )
+        return entries
 
     @classmethod
     def from_pyproject_path(
@@ -344,8 +405,13 @@ class Config(InteractiveConfig, Defaultable):
         return cls.load(pyproject.absolute(), key=toml_key, convert_types=True)
 
     @classmethod
-    def from_pyproject(cls, toml_key: str = TOML_KEY) -> t.Self:
-        return cls.from_pyproject_path(Path.cwd() / "pyproject.toml", toml_key=toml_key)
+    def from_pyproject(
+        cls,
+        root: str | Path | None = None,
+        toml_key: str = TOML_KEY,
+    ) -> t.Self:
+        base = Path(root) if root is not None else Path.cwd()
+        return cls.from_pyproject_path(base / "pyproject.toml", toml_key=toml_key)
 
     @classmethod
     def has_pyproject_config(
