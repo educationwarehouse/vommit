@@ -15,6 +15,7 @@ from .commits import (
     has_breaking_footer,
     parse_commit,
 )
+from .helpers import read_toml
 from .interactive import InteractiveConfig
 from .versioning import DEFAULT_PRERELEASE_TOKEN, PrereleaseToken
 
@@ -321,9 +322,6 @@ class Config(InteractiveConfig, Defaultable):
 
     confirm: t.Annotated[bool, "Ask before writing a release?"] = True
 
-    # todo:
-    #  - compatibility/migration from old `tool.semantic_release` config
-
     version_bump_map: dict[str, VersionBump] = {
         BREAKING: "major",
         "feat": "minor",
@@ -424,7 +422,7 @@ class Config(InteractiveConfig, Defaultable):
         )
         if not pyproject_path.exists():
             return False
-        doc = tomlkit.parse(pyproject_path.read_text())
+        doc = read_toml(pyproject_path)
         return _get_nested_mapping(doc, toml_key) is not None
 
     @classmethod
@@ -438,7 +436,7 @@ class Config(InteractiveConfig, Defaultable):
         )
         if not pyproject_path.exists():
             return set()
-        doc = tomlkit.parse(pyproject_path.read_text())
+        doc = read_toml(pyproject_path)
         table = _get_nested_mapping(doc, toml_key)
         if table is None:
             return set()
@@ -465,9 +463,7 @@ class Config(InteractiveConfig, Defaultable):
             Path(pyproject) if pyproject is not None else Path.cwd() / "pyproject.toml"
         )
         doc = (
-            tomlkit.parse(pyproject_path.read_text())
-            if pyproject_path.exists()
-            else tomlkit.document()
+            read_toml(pyproject_path) if pyproject_path.exists() else tomlkit.document()
         )
 
         key_parts = toml_key.split(".")
