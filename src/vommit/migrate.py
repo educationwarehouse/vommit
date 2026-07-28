@@ -3,17 +3,20 @@ import dataclasses as dc
 import difflib
 import re
 import typing as t
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import tomlkit
 
 from .commits import BREAKING, VersionBump
-from .config import ChangelogConfig, Config
+from .config import DERIVE_BRANCH, ChangelogConfig, Config
 from .errors import VommitError
-from .helpers import throw
+from .helpers import read_toml, throw
 from .versioning import PrereleaseToken, parse_version
 
 PSR_KEY = "tool.semantic_release"
+
+UnsupportedPolicy = t.Literal["warn", "error", "skip"]
+UNSUPPORTED_POLICIES: tuple[UnsupportedPolicy, ...] = t.get_args(UnsupportedPolicy)
 
 ANGULAR_PARSER = "semantic_release.history.angular_parser"
 
@@ -72,6 +75,9 @@ RE_CHANGE_TYPE = re.compile(r"[a-z][a-z0-9-]*$")
 # leading distribution name of a requirement string, before any extra,
 # specifier or marker
 RE_REQUIREMENT_NAME = re.compile(r"^[A-Za-z0-9._-]+")
+
+# the runs of separators PEP 503 collapses when comparing distribution names
+RE_NAME_SEPARATORS = re.compile(r"[-_.]+")
 
 PSR_DISTRIBUTION = "python-semantic-release"
 
@@ -144,6 +150,8 @@ UNSUPPORTED_KEYS: dict[str, str] = {
     "changelog_components": "the changelog is rendered by vommit itself",
     "changelog_scope": "scopes are always shown",
     "check_build_status": "vommit does not poll a CI provider",
+    # todo: let a project set the release commit author, and map this onto it
+    "commit_author": "release commits carry your own git identity",
     "commit_version_number": "vommit always commits the version bump",
     "dist_glob_patterns": "publishing is a plain shell command (commands.publish)",
     "fix_tag": "emoji parser setting",
@@ -165,8 +173,10 @@ UNSUPPORTED_KEYS: dict[str, str] = {
     "pypi_user_var": "PyPI credentials come from keyring or the environment",
     "repository": "publishing is a plain shell command (commands.publish)",
     "repository_pass_var": "PyPI credentials come from keyring or the environment",
+    "repository_url": "publishing is a plain shell command (commands.publish)",
     "repository_url_var": "publishing is a plain shell command (commands.publish)",
     "repository_user_var": "PyPI credentials come from keyring or the environment",
+    "upload_to_pypi_glob_patterns": "publishing is a plain shell command (commands.publish)",
     "upload_to_release": "vommit does not create forge releases",
     "use_only_cwd_commits": "vommit reads the whole history of the branch",
     "use_textual_changelog_sections": "emoji parser setting",
@@ -228,22 +238,67 @@ class Note:
 @dc.dataclass(frozen=True)
 class VersionTransform:
     """
-    The `[project]` edits that turn a dynamic version into one vommit can bump.
+    The `[project]` edits that give vommit a version it can bump.
+
+    Two shapes reach this: a dynamic version to undo (`backend` and `hook_key`
+    set), and a `[project]` that never declared a version at all -- legal under
+    v7, which kept it in the source file, and unbuildable without one now.
     """
 
     version: str
-    backend: str
-    hook_key: str
     # where `version` was read, so the confirmation can say so
     source: str
+    # both None when there was no dynamic version to undo, only one to add
+    backend: str | None = None
+    hook_key: str | None = None
 
     @property
     def steps(self) -> list[str]:
-        return [
-            f'set [project].version = "{self.version}" (read from {self.source})',
-            'remove "version" from [project].dynamic',
-            f"remove [{self.hook_key}]",
+        steps = [f'set [project].version = "{self.version}" (read from {self.source})']
+        if self.hook_key:
+            steps += [
+                'remove "version" from [project].dynamic',
+                f"remove [{self.hook_key}]",
+            ]
+        return steps
+
+
+@dc.dataclass(frozen=True)
+class VersionPlan:
+    """
+    The version half of a migration, planned before anything is written.
+
+    The freeze and the rewrites are one change: pointing `__version__` at the
+    installed metadata while the version lives nowhere else leaves the project
+    with no version at all, which is why `plan_version_migration` refuses that
+    combination rather than reporting it afterwards.
+    """
+
+    transform: VersionTransform | None = None
+    rewrites: tuple[VersionFile, ...] = ()
+    warnings: tuple[Note, ...] = ()
+
+    @property
+    def empty(self) -> bool:
+        return self.transform is None and not self.rewrites
+
+    @property
+    def steps(self) -> list[str]:
+        steps = list(self.transform.steps) if self.transform else []
+        steps += [
+            f"rewrite {version_file.path} to "
+            f"`{version_file.variable} = version(__package__)`"
+            for version_file in self.rewrites
         ]
+        return steps
+
+    @property
+    def question(self) -> str:
+        if self.transform is None:
+            return "Point the version file at the installed metadata?"
+        if self.transform.hook_key:
+            return "This project declares a dynamic version, which cannot be bumped. Fix it?"
+        return "This project declares no [project].version, which vommit needs to bump. Add it?"
 
 
 @dc.dataclass(frozen=True)
@@ -306,14 +361,14 @@ def read_psr(pyproject: Path) -> Raw | None:
     """
     The `[tool.semantic_release]` table, or None if the project has none.
 
-    `setup.cfg` is deliberately not read; v7 merged it under pyproject, but a
-    project that keeps its config there is rare enough to refuse loudly (in
-    `tasks.py`) rather than half-migrate.
+    pyproject is the only source read. v7 also merged `setup.cfg` in, so a
+    project that kept its config there is not migrated and not warned about;
+    move those keys into pyproject first.
     """
     if not pyproject.exists():
         return None
 
-    document = tomlkit.parse(pyproject.read_text())
+    document = read_toml(pyproject)
     tool = document.get("tool")
     table = tool.get("semantic_release") if isinstance(tool, dict) else None
     if not isinstance(table, dict):
@@ -321,6 +376,33 @@ def read_psr(pyproject: Path) -> Raw | None:
 
     explicit = {str(key): _plain(value) for key, value in table.items()}
     return Raw(values=PSR_DEFAULTS | explicit, explicit=frozenset(explicit))
+
+
+def parse_unsupported_policy(value: str) -> UnsupportedPolicy:
+    """
+    `--on-unsupported`, checked rather than trusted.
+
+    The option exists to make a migration stricter, so an unrecognised spelling
+    has to fail: silently falling back to `warn` hands back the laxest
+    behaviour to whoever just asked for the strictest.
+    """
+    if value not in UNSUPPORTED_POLICIES:
+        raise VommitError(
+            f"--on-unsupported must be one of {', '.join(UNSUPPORTED_POLICIES)}; "
+            f"got {value!r}."
+        )
+    return value
+
+
+def project_name(pyproject: Path) -> str | None:
+    """
+    The distribution name in `[project]`, if the project declares one.
+    """
+    if not pyproject.exists():
+        return None
+    project = read_toml(pyproject).get("project")
+    name = project.get("name") if isinstance(project, dict) else None
+    return str(name) if name else None
 
 
 def _plain(value: t.Any) -> t.Any:
@@ -454,7 +536,7 @@ def _refuse_unmigratable(raw: Raw) -> None:
 
 
 def _translate_git(work: _Translation) -> None:
-    work.assign("branch", "git.branch", str(work.get("branch")))
+    _translate_branch(work)
     work.assign("commit_subject", "git.commit_format", str(work.get("commit_subject")))
 
     if work.get("tag_commit"):
@@ -466,6 +548,30 @@ def _translate_git(work: _Translation) -> None:
             None,
             detail="tagging stays off (git.tag_format cleared)",
         )
+
+
+def _translate_branch(work: _Translation) -> None:
+    """
+    The one v7 default worth *not* carrying over.
+
+    Every other default describes what the project was released under, so
+    reproducing it keeps behaviour. `branch = master` describes what v7 guessed
+    when nobody said otherwise -- and on a repo that renamed its default branch
+    it is simply wrong, pinning a branch that does not exist and failing the
+    first bump against `on_wrong_branch = error`. A branch the project wrote
+    down is a decision and gets pinned; an unwritten one is left to vommit's
+    own auto-detect, which resolves the real default branch when the config is
+    written.
+    """
+    if work.is_explicit("branch"):
+        work.assign("branch", "git.branch", str(work.get("branch")))
+        return
+
+    work.note_lossy(
+        "branch",
+        f"unset, so v7 released from {str(work.get('branch'))!r}; leaving "
+        f"git.branch at {DERIVE_BRANCH} to detect the real default branch",
+    )
 
 
 def _translate_changelog(work: _Translation) -> None:
@@ -691,12 +797,22 @@ def plan_static_version(
     in a way this cannot undo, because writing a config that can never bump is
     worse than refusing.
     """
-    document = tomlkit.parse(pyproject.read_text())
+    document = read_toml(pyproject)
     project = document.get("project")
-    dynamic = project.get("dynamic", []) if isinstance(project, dict) else []
-
-    if "version" not in [str(entry) for entry in dynamic]:
+    if not isinstance(project, dict):
+        # no PEP 621 metadata at all: there is nowhere to put a version, and
+        # inventing a [project] table claims more than a migration should.
         return None
+
+    dynamic = [str(entry) for entry in project.get("dynamic", [])]
+    if "version" not in dynamic:
+        if "version" in project:
+            return None
+        # v7 predates PEP 621 and was happy with the version living only in the
+        # source file. `uv version` is not: without [project].version there is
+        # nothing to read, let alone bump.
+        version, origin = _discover_version(pyproject.parent, version_files, fallback)
+        return VersionTransform(version=version, source=origin)
 
     backend = _detect_backend(document)
     hook_key = HOOK_KEYS.get(backend)
@@ -717,8 +833,97 @@ def plan_static_version(
 
     version, origin = _discover_version(pyproject.parent, version_files, fallback)
     return VersionTransform(
-        version=version, backend=backend, hook_key=hook_key, source=origin
+        version=version, source=origin, backend=backend, hook_key=hook_key
     )
+
+
+def plan_version_migration(
+    pyproject: Path,
+    version_files: t.Iterable[VersionFile],
+    fallback: str | None = None,
+) -> VersionPlan:
+    """
+    Everything the migration does to the version, decided in one place.
+
+    Refuses the one combination that destroys information: rewriting the source
+    literal away when `[project]` cannot hold the version it replaced. That is
+    not a hypothetical -- a v7 project with no `[project].version` and no
+    `dynamic` keeps its only version in the file about to be rewritten.
+    """
+    rewrites = tuple(version_files)
+    transform = plan_static_version(pyproject, rewrites, fallback)
+
+    if rewrites and transform is None and not _has_static_version(pyproject):
+        raise VommitError(
+            f"rewriting {', '.join(entry.path for entry in rewrites)} would "
+            f"leave this project with no version at all: there is no [project] "
+            f"table to freeze one into. Add [project] to pyproject.toml first, "
+            f"then migrate."
+        )
+
+    return VersionPlan(
+        transform=transform,
+        rewrites=rewrites,
+        warnings=tuple(_rewrite_warnings(rewrites, project_name(pyproject))),
+    )
+
+
+def _has_static_version(pyproject: Path) -> bool:
+    project = read_toml(pyproject).get("project")
+    return isinstance(project, dict) and "version" in project
+
+
+def _rewrite_warnings(
+    version_files: t.Iterable[VersionFile],
+    distribution: str | None,
+) -> list[Note]:
+    """
+    Where `version(__package__)` will not resolve to the distribution.
+
+    `importlib.metadata.version` looks up a *distribution*, while `__package__`
+    names the *import* package. They usually normalise to the same string,
+    which is why the idiom works at all -- but when they do not, the rewritten
+    file raises `PackageNotFoundError` on import, long after this ran.
+    """
+    if not distribution:
+        return []
+
+    notes: list[Note] = []
+    wanted = normalise_name(distribution)
+    for version_file in version_files:
+        package = _import_package(version_file)
+        literal = f'{version_file.variable} = version("{distribution}")'
+        if package is None:
+            notes.append(
+                Note(
+                    version_file.path,
+                    f"a top-level module has no `__package__` to look up; "
+                    f"write `{literal}` instead",
+                )
+            )
+        elif normalise_name(package) != wanted:
+            notes.append(
+                Note(
+                    version_file.path,
+                    f"`version(__package__)` looks up {package!r}, but the "
+                    f"distribution is {distribution!r}; write `{literal}` "
+                    f"instead if the import fails",
+                )
+            )
+    return notes
+
+
+def _import_package(version_file: VersionFile) -> str | None:
+    """
+    What `__package__` holds inside this file, or None for a top-level module.
+
+    A `src` directory is a layout convention rather than a package, so it never
+    counts towards the dotted name -- a project that really ships a package
+    called `src` gets one spurious warning.
+    """
+    parts = PurePosixPath(version_file.path).parts[:-1]
+    package = [part for part in parts if part not in {".", "src"}]
+    return ".".join(package) or None
 
 
 def _detect_backend(document: t.Any) -> str:
@@ -770,19 +975,21 @@ def apply_static_version(pyproject: Path, transform: VersionTransform) -> None:
     """
     Carry out `transform`: static version in, `dynamic` and the hook table out.
     """
-    document = tomlkit.parse(pyproject.read_text())
+    document = read_toml(pyproject)
     project = document["project"]
 
     project["version"] = transform.version
-    remaining = [
-        entry for entry in project.get("dynamic", []) if str(entry) != "version"
-    ]
-    if remaining:
-        project["dynamic"] = remaining
-    else:
-        del project["dynamic"]
 
-    _remove_nested(document, transform.hook_key)
+    if transform.hook_key:
+        remaining = [
+            entry for entry in project.get("dynamic", []) if str(entry) != "version"
+        ]
+        if remaining:
+            project["dynamic"] = remaining
+        else:
+            del project["dynamic"]
+        _remove_nested(document, transform.hook_key)
+
     pyproject.write_text(tomlkit.dumps(document))
 
 
@@ -848,7 +1055,7 @@ def strip_psr(pyproject: Path) -> list[str]:
     Two live release configs in one file is the failure mode worth avoiding:
     whichever tool runs next looks authoritative and neither is.
     """
-    document = tomlkit.parse(pyproject.read_text())
+    document = read_toml(pyproject)
     removed: list[str] = []
 
     if _remove_nested(document, PSR_KEY):
@@ -900,12 +1107,19 @@ def _dependency_lists(document: t.Any) -> t.Iterator[tuple[str, t.Any, str]]:
                 yield f"{prefix}.{group}", parent, str(group)
 
 
+def normalise_name(name: str) -> str:
+    """
+    A distribution name in the one spelling PEP 503 compares.
+    """
+    return RE_NAME_SEPARATORS.sub("-", name).lower()
+
+
 def _requirement_name(requirement: str) -> str:
     """
     The distribution a requirement string names, normalised per PEP 503.
     """
     match = RE_REQUIREMENT_NAME.match(requirement.strip())
-    return re.sub(r"[-_.]+", "-", match.group()).lower() if match else ""
+    return normalise_name(match.group()) if match else ""
 
 
 def _table_at(document: t.Any, dotted_key: str) -> t.Any:

@@ -5,7 +5,7 @@ import pytest
 import tomlkit
 
 from src.vommit.commits import BREAKING
-from src.vommit.config import Config
+from src.vommit.config import DERIVE_BRANCH, Config
 from src.vommit.errors import VommitError
 from src.vommit.migrate import (
     METADATA_IMPORT,
@@ -14,7 +14,10 @@ from src.vommit.migrate import (
     Raw,
     VersionFile,
     apply_static_version,
+    parse_unsupported_policy,
     plan_static_version,
+    plan_version_migration,
+    project_name,
     read_psr,
     rewrite_version_files,
     split_fields,
@@ -24,7 +27,7 @@ from src.vommit.migrate import (
 from src.vommit.shell import LocalRunner
 from src.vommit.versioning import UvProject
 
-# the real thing: /home/robin/Work/endow, hatchling + dynamic version, six keys
+# modelled on a real v7 project: hatchling + dynamic version, six keys
 ENDOW = """
 [build-system]
 requires = ["hatchling"]
@@ -126,7 +129,6 @@ def test_an_empty_v7_config_still_translates_v7_behaviour(tmp_path):
     migration = translate(psr(tmp_path))
     config = migration.config
 
-    assert config.git.branch == "master"  # vommit would default to <head>
     assert config.changelog.placeholder == "<!--next-version-placeholder-->"
     assert config.prerelease_token == "beta"  # vommit would default to rc
     assert config.git.tag_format == "v{version}"
@@ -152,6 +154,27 @@ def test_an_empty_v7_config_translates_the_default_sections(tmp_path):
         "docs": "Documentation",
         "perf": "Performance",
     }
+
+
+def test_an_unwritten_branch_is_left_to_auto_detect(tmp_path):
+    """
+    v7's `branch = master` default was v7's guess, not the project's decision;
+    pinning it breaks the first bump on every repo that renamed since.
+    """
+    migration = translate(psr(tmp_path))
+
+    assert migration.config.git.branch == DERIVE_BRANCH
+    assert "git.branch" not in migration.key_paths
+    assert "master" in notes(migration.report.lossy)["branch"]
+    assert DERIVE_BRANCH in notes(migration.report.lossy)["branch"]
+
+
+def test_a_branch_the_project_wrote_down_is_pinned(tmp_path):
+    migration = translate(psr(tmp_path, "branch = 'trunk'\n"))
+
+    assert migration.config.git.branch == "trunk"
+    assert "git.branch" in migration.key_paths
+    assert "branch" not in notes(migration.report.lossy)
 
 
 def test_the_dropped_bump_types_point_at_the_override(tmp_path):
@@ -530,15 +553,49 @@ def test_a_static_project_needs_no_transform(tmp_path):
     assert plan_static_version(write(tmp_path, UV_BUILD), []) is None
 
 
-def test_a_project_without_a_dynamic_version_needs_no_transform(tmp_path):
-    assert plan_static_version(write(tmp_path, "[project]\nname = 'x'\n"), []) is None
-    assert (
-        plan_static_version(
-            write(tmp_path, "[project]\nname = 'x'\ndynamic = ['readme']\n"), []
-        )
-        is None
-    )
+def test_a_project_that_already_has_a_static_version_is_left_alone(tmp_path):
+    body = "[project]\nname = 'x'\nversion = '1.0.0'\n"
+    assert plan_static_version(write(tmp_path, body), []) is None
+    assert plan_static_version(write(tmp_path, f"{body}dynamic = ['readme']\n"), []) is None
+
+
+def test_a_project_without_pep_621_metadata_needs_no_transform(tmp_path):
+    # nowhere to put a version; inventing a [project] table is not a migration
     assert plan_static_version(write(tmp_path, "[tool.other]\nkey = 1\n"), []) is None
+
+
+def test_a_project_with_no_version_at_all_gets_one_frozen_in(tmp_path):
+    """
+    v7 predates PEP 621 and let the version live only in the source file. That
+    file is about to be rewritten, so the literal has to land in [project] --
+    the case that used to slip through and leave the project versionless.
+    """
+    pyproject = write(tmp_path, "[project]\nname = 'x'\n")
+    (tmp_path / "x.py").write_text('__version__ = "2.0.0"\n')
+
+    transform = plan_static_version(pyproject, [VersionFile("x.py", "__version__")])
+
+    assert transform is not None
+    assert transform.version == "2.0.0"
+    assert transform.source == "x.py"
+    # nothing dynamic to undo, so no backend hook to take out either
+    assert transform.backend is None
+    assert transform.hook_key is None
+    assert transform.steps == [
+        'set [project].version = "2.0.0" (read from x.py)',
+    ]
+
+
+def test_a_version_only_freeze_touches_nothing_else(tmp_path):
+    pyproject = write(tmp_path, "[project]\nname = 'x'\ndynamic = ['readme']\n")
+    transform = plan_static_version(pyproject, [], fallback="3.0.0")
+    assert transform is not None
+
+    apply_static_version(pyproject, transform)
+    result = tomlkit.parse(pyproject.read_text())
+
+    assert result["project"]["version"] == "3.0.0"
+    assert result["project"]["dynamic"] == ["readme"]
 
 
 def test_endow_needs_the_static_version_transform(tmp_path):
@@ -822,6 +879,155 @@ def test_files_that_cannot_be_rewritten_are_reported(tmp_path):
         "version.cfg": "not a Python file; rewrite it yourself",
         "empty.py": "no __version__ assignment found",
     }
+
+
+def test_the_plan_pairs_the_freeze_with_the_rewrites(tmp_path):
+    plan = plan_version_migration(endow(tmp_path), [ENDOW_VERSION_FILE])
+
+    assert not plan.empty
+    assert plan.rewrites == (ENDOW_VERSION_FILE,)
+    assert plan.warnings == ()
+    assert plan.steps == [
+        'set [project].version = "0.1.1" (read from src/endow/__about__.py)',
+        'remove "version" from [project].dynamic',
+        "remove [tool.hatch.version]",
+        "rewrite src/endow/__about__.py to `__version__ = version(__package__)`",
+    ]
+    assert "dynamic version" in plan.question
+
+
+def test_a_plan_with_nothing_to_do_is_empty(tmp_path):
+    plan = plan_version_migration(write(tmp_path, UV_BUILD), [])
+
+    assert plan.empty
+    assert plan.steps == []
+
+
+def test_the_question_names_what_the_plan_actually_does(tmp_path):
+    write(tmp_path, "[project]\nname = 'sample'\nversion = '1.0.0'\n")
+    (tmp_path / "sample").mkdir()
+    (tmp_path / "sample" / "__init__.py").write_text('__version__ = "1.0.0"\n')
+    rewrite_only = plan_version_migration(
+        tmp_path / "pyproject.toml", [VersionFile("sample/__init__.py", "__version__")]
+    )
+    assert "installed metadata" in rewrite_only.question
+
+    write(tmp_path, "[project]\nname = 'sample'\n")
+    freeze = plan_version_migration(
+        tmp_path / "pyproject.toml", [VersionFile("sample/__init__.py", "__version__")]
+    )
+    assert "no [project].version" in freeze.question
+
+
+def test_a_rewrite_that_would_erase_the_only_version_is_refused(tmp_path):
+    """
+    No [project] table to freeze into, so the file about to be rewritten holds
+    the last copy of the version. Refusing beats a project that cannot build.
+    """
+    write(tmp_path, "[tool.other]\nkey = 1\n")
+    (tmp_path / "mod.py").write_text('__version__ = "1.0.0"\n')
+
+    with pytest.raises(VommitError, match="no version at all"):
+        plan_version_migration(
+            tmp_path / "pyproject.toml", [VersionFile("mod.py", "__version__")]
+        )
+
+
+def test_a_mismatched_distribution_name_is_warned_about(tmp_path):
+    write(tmp_path, "[project]\nname = 'my-lib'\nversion = '1.0.0'\n")
+
+    plan = plan_version_migration(
+        tmp_path / "pyproject.toml", [VersionFile("src/barfoo/__init__.py", "__ver__")]
+    )
+
+    detail = notes(list(plan.warnings))["src/barfoo/__init__.py"]
+    assert "'barfoo'" in detail
+    assert "'my-lib'" in detail
+    assert '__ver__ = version("my-lib")' in detail
+
+
+def test_a_top_level_module_has_no_package_to_look_up(tmp_path):
+    write(tmp_path, "[project]\nname = 'sample'\nversion = '1.0.0'\n")
+
+    plan = plan_version_migration(
+        tmp_path / "pyproject.toml", [VersionFile("sample.py", "__version__")]
+    )
+
+    detail = notes(list(plan.warnings))["sample.py"]
+    assert "no `__package__`" in detail
+    assert '__version__ = version("sample")' in detail
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["src/my_lib/__init__.py", "my-lib/__init__.py", "./src/my.lib/_version.py"],
+)
+def test_names_that_normalise_to_the_distribution_stay_quiet(tmp_path, path):
+    write(tmp_path, "[project]\nname = 'my-lib'\nversion = '1.0.0'\n")
+
+    plan = plan_version_migration(
+        tmp_path / "pyproject.toml", [VersionFile(path, "__version__")]
+    )
+
+    assert plan.warnings == ()
+
+
+def test_a_nested_package_cannot_be_looked_up_either(tmp_path):
+    write(tmp_path, "[project]\nname = 'pkg'\nversion = '1.0.0'\n")
+
+    plan = plan_version_migration(
+        tmp_path / "pyproject.toml", [VersionFile("src/pkg/sub/_v.py", "__version__")]
+    )
+
+    assert "'pkg.sub'" in notes(list(plan.warnings))["src/pkg/sub/_v.py"]
+
+
+def test_a_project_without_a_name_cannot_be_checked(tmp_path):
+    assert project_name(tmp_path / "pyproject.toml") is None
+    assert project_name(write(tmp_path, "[tool.other]\nkey = 1\n")) is None
+    assert project_name(write(tmp_path, "[project]\nversion = '1.0.0'\n")) is None
+    assert project_name(write(tmp_path, "[project]\nname = 'x'\n")) == "x"
+
+    # no name to compare against, so no warning to make
+    write(tmp_path, "[project]\nversion = '1.0.0'\n")
+    plan = plan_version_migration(
+        tmp_path / "pyproject.toml", [VersionFile("whatever.py", "__version__")]
+    )
+    assert plan.warnings == ()
+
+
+@pytest.mark.parametrize("policy", ["warn", "error", "skip"])
+def test_every_unsupported_policy_is_accepted(policy):
+    assert parse_unsupported_policy(policy) == policy
+
+
+@pytest.mark.parametrize("policy", ["bogus", "Error", "", "WARN"])
+def test_an_unrecognised_unsupported_policy_is_refused(policy):
+    """
+    The option only exists to make things stricter, so it has to fail loudly
+    rather than fall back to the laxest setting it has.
+    """
+    with pytest.raises(VommitError, match="--on-unsupported must be one of"):
+        parse_unsupported_policy(policy)
+
+
+@pytest.mark.parametrize(
+    "key,fragment",
+    [
+        ("commit_author", "your own git identity"),
+        ("repository_url", "commands.publish"),
+        ("upload_to_pypi_glob_patterns", "commands.publish"),
+    ],
+)
+def test_real_v7_keys_are_not_mistaken_for_typos(tmp_path, key, fragment):
+    """
+    All three are genuine v7 settings; reporting them as misspellings hides a
+    real loss behind a did-you-mean.
+    """
+    detail = notes(translate(psr(tmp_path, f"{key} = 'x'\n")).report.unsupported)[key]
+
+    assert fragment in detail
+    assert "Did you mean" not in detail
 
 
 def test_stripping_endow(tmp_path):

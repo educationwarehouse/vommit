@@ -2,6 +2,18 @@ import typing as t
 from importlib.metadata import version
 from pathlib import Path
 
+import tomlkit
+
+
+def read_toml(path: Path) -> tomlkit.TOMLDocument:
+    """
+    A TOML file as a document that remembers its comments and formatting.
+
+    Every write path re-parses rather than caching: the file is edited in
+    several passes, and a stale document would silently undo an earlier one.
+    """
+    return tomlkit.parse(path.read_text())
+
 
 def throw(error: Exception) -> t.Never:
     """
