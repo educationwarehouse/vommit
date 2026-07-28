@@ -1,140 +1,102 @@
-import keyring.errors
 import pytest
 
-import requests
-
 from src.vommit import auth
+from src.vommit.auth import TokenStore
 from src.vommit.errors import VommitError
 
+from .conftest import BrokenKeyring, FakeIndex, FakeKeyring
 
-class FakeKeyring:
-    """
-    Stands in for the keyring backend; the real one wants a session daemon.
-    """
-
-    def __init__(self, stored: dict[tuple[str, str], str] | None = None) -> None:
-        self.stored = stored or {}
-
-    def get_password(self, service: str, username: str) -> str | None:
-        return self.stored.get((service, username))
-
-    def set_password(self, service: str, username: str, password: str) -> None:
-        self.stored[(service, username)] = password
-
-    def delete_password(self, service: str, username: str) -> None:
-        if (service, username) not in self.stored:
-            raise keyring.errors.PasswordDeleteError("not found")
-        del self.stored[(service, username)]
-
-
-class BrokenKeyring:
-    """
-    A machine with no keyring backend, which is the default on headless Linux.
-    """
-
-    def get_password(self, service: str, username: str) -> str | None:
-        raise keyring.errors.NoKeyringError("No recommended backend was available")
-
-    def set_password(self, service: str, username: str, password: str) -> None:
-        raise keyring.errors.NoKeyringError("No recommended backend was available")
-
-    def delete_password(self, service: str, username: str) -> None:
-        raise keyring.errors.NoKeyringError("No recommended backend was available")
+TOKEN = "pypi-abc"
 
 
 @pytest.fixture
-def fake_keyring(monkeypatch) -> FakeKeyring:
-    fake = FakeKeyring()
-    monkeypatch.setattr(auth.keyring, "get_password", fake.get_password)
-    monkeypatch.setattr(auth.keyring, "set_password", fake.set_password)
-    monkeypatch.setattr(auth.keyring, "delete_password", fake.delete_password)
-    monkeypatch.delenv(auth.TOKEN_VAR, raising=False)
-    return fake
+def store() -> TokenStore:
+    """
+    A token store over a dictionary, ready to be read from and written to.
+    """
+    return TokenStore(backend=FakeKeyring())
 
 
 @pytest.fixture
-def broken_keyring(monkeypatch) -> None:
-    broken = BrokenKeyring()
-    monkeypatch.setattr(auth.keyring, "get_password", broken.get_password)
-    monkeypatch.setattr(auth.keyring, "set_password", broken.set_password)
-    monkeypatch.setattr(auth.keyring, "delete_password", broken.delete_password)
+def broken() -> TokenStore:
+    return TokenStore(backend=BrokenKeyring())
 
 
-@pytest.fixture
-def no_env_token(monkeypatch) -> None:
-    monkeypatch.delenv(auth.TOKEN_VAR, raising=False)
+def test_stored_token_reads_vommits_own_namespace(store):
+    store.backend.stored[("vommit", "pypi")] = TOKEN
+
+    assert store.stored() == TOKEN
 
 
-class FakeResponse:
-    def __init__(self, status_code: int) -> None:
-        self.status_code = status_code
+def test_stored_token_is_none_when_nothing_is_stored(store):
+    assert store.stored() is None
 
 
-def answering(status: int | None, seen: dict | None = None):
-    """
-    Stands in for requests.post, so no test needs the network.
-    """
-
-    def post(url, auth=None, data=None, timeout=None):
-        if seen is not None:
-            seen.update(url=url, auth=auth, data=data, timeout=timeout)
-        if status is None:
-            raise requests.ConnectionError("unreachable")
-        return FakeResponse(status)
-
-    return post
-
-
-def test_stored_token_reads_vommits_own_namespace(fake_keyring):
-    fake_keyring.stored[("vommit", "pypi")] = "pypi-abc"
-
-    assert auth.stored_token() == "pypi-abc"
-
-
-def test_stored_token_is_none_when_nothing_is_stored(fake_keyring):
-    assert auth.stored_token() is None
-
-
-def test_an_empty_entry_counts_as_no_token(fake_keyring):
+def test_an_empty_entry_counts_as_no_token(store):
     # some backends answer "" rather than None for a key they do not have
-    fake_keyring.stored[("vommit", "pypi")] = ""
+    store.backend.stored[("vommit", "pypi")] = ""
 
-    assert auth.stored_token() is None
-
-
-def test_store_token_overwrites(fake_keyring):
-    auth.store_token("first")
-    auth.store_token("second")
-
-    assert auth.stored_token() == "second"
+    assert store.stored() is None
 
 
-def test_store_token_strips_surrounding_whitespace(fake_keyring):
-    auth.store_token("  pypi-abc\n")
+def test_a_store_only_sees_its_own_backend():
+    # what patching the module could not express: two machines at once
+    mine = TokenStore(backend=FakeKeyring())
+    theirs = TokenStore(backend=FakeKeyring())
+    mine.store(TOKEN)
 
-    assert auth.stored_token() == "pypi-abc"
-
-
-def test_require_token_returns_the_stored_one(fake_keyring, no_env_token):
-    fake_keyring.stored[("vommit", "pypi")] = "pypi-abc"
-
-    assert auth.require_token() == "pypi-abc"
+    assert theirs.stored() is None
 
 
-def test_require_token_prefers_the_environment(fake_keyring, monkeypatch):
+def test_the_namespace_is_configurable(store):
+    elsewhere = TokenStore(backend=store.backend, service="other", username="someone")
+    elsewhere.store(TOKEN)
+
+    assert store.stored() is None
+    assert elsewhere.stored() == TOKEN
+
+
+def test_store_token_overwrites(store):
+    store.store("first")
+    store.store("second")
+
+    assert store.stored() == "second"
+
+
+def test_store_token_strips_surrounding_whitespace(store):
+    store.store(f"  {TOKEN}\n")
+
+    assert store.stored() == TOKEN
+
+
+def test_require_token_returns_the_stored_one(store):
+    store.store(TOKEN)
+
+    assert store.require() == TOKEN
+
+
+def test_require_token_prefers_the_environment(store, monkeypatch):
     # the CI path: nothing stored, nothing to ask, but the variable is set
-    fake_keyring.stored[("vommit", "pypi")] = "pypi-stored"
+    store.store("pypi-stored")
     monkeypatch.setenv(auth.TOKEN_VAR, "pypi-from-env")
 
-    assert auth.require_token() == "pypi-from-env"
+    assert store.require() == "pypi-from-env"
 
 
-def test_require_token_names_both_ways_out(fake_keyring, no_env_token):
+def test_require_token_names_both_ways_out(store):
     with pytest.raises(VommitError, match="vommit authenticate"):
-        auth.require_token()
+        store.require()
 
     with pytest.raises(VommitError, match=auth.TOKEN_VAR):
-        auth.require_token()
+        store.require()
+
+
+def test_require_token_helper_uses_the_real_keyring(monkeypatch):
+    # the default `Authenticate` release() falls back on; the environment is
+    # enough to answer it without a backend being installed
+    monkeypatch.setenv(auth.TOKEN_VAR, TOKEN)
+
+    assert auth.require_token() == TOKEN
 
 
 def test_environment_token_ignores_an_empty_variable(monkeypatch):
@@ -143,34 +105,34 @@ def test_environment_token_ignores_an_empty_variable(monkeypatch):
 
 
 def test_publish_env():
-    assert auth.publish_env("pypi-abc") == {"UV_PUBLISH_TOKEN": "pypi-abc"}
+    assert auth.publish_env(TOKEN) == {"UV_PUBLISH_TOKEN": TOKEN}
     assert auth.publish_env(None) == {}
 
 
 # --- a machine without a keyring backend --------------------------------------
 
 
-def test_a_missing_backend_reads_as_a_vommit_error(broken_keyring):
+def test_a_missing_backend_reads_as_a_vommit_error(broken):
     # regression: keyring's own exception escaped as a traceback
     with pytest.raises(VommitError, match="Could not read the keyring"):
-        auth.stored_token()
+        broken.stored()
 
 
-def test_a_missing_backend_says_how_to_work_around_it(broken_keyring):
+def test_a_missing_backend_says_how_to_work_around_it(broken):
     with pytest.raises(VommitError, match="use_keyring = false"):
-        auth.stored_token()
+        broken.stored()
 
 
-def test_a_missing_backend_on_write_reads_as_a_vommit_error(broken_keyring):
+def test_a_missing_backend_on_write_reads_as_a_vommit_error(broken):
     with pytest.raises(VommitError, match="Could not write to the keyring"):
-        auth.store_token("pypi-abc")
+        broken.store(TOKEN)
 
 
 # --- format ------------------------------------------------------------------
 
 
 def test_check_format_strips_and_accepts_a_real_token():
-    assert auth.check_format("  pypi-abc\n") == "pypi-abc"
+    assert auth.check_format(f"  {TOKEN}\n") == TOKEN
 
 
 def test_check_format_refuses_an_empty_token():
@@ -187,71 +149,69 @@ def test_check_format_refuses_something_that_is_not_a_token():
 # --- the live probe -----------------------------------------------------------
 
 
-def test_a_rejected_token_is_reported(monkeypatch):
-    monkeypatch.setattr(auth.requests, "post", answering(403))
-
+def test_a_rejected_token_is_reported():
     with pytest.raises(VommitError, match="PyPI rejected this token"):
-        auth.verify_token("pypi-abc")
+        auth.verify_token(TOKEN, post=FakeIndex(403).post)
 
 
-def test_an_unauthorised_answer_counts_as_rejection(monkeypatch):
-    monkeypatch.setattr(auth.requests, "post", answering(401))
-
+def test_an_unauthorised_answer_counts_as_rejection():
     with pytest.raises(VommitError, match="401"):
-        auth.verify_token("pypi-abc")
+        auth.verify_token(TOKEN, post=FakeIndex(401).post)
 
 
-def test_a_400_means_the_credentials_were_fine(monkeypatch):
+def test_a_400_means_the_credentials_were_fine():
     # an empty upload is malformed on purpose; getting told so is the pass
-    monkeypatch.setattr(auth.requests, "post", answering(400))
-
-    assert auth.verify_token("pypi-abc") == "pypi-abc"
+    assert auth.verify_token(TOKEN, post=FakeIndex(400).post) == TOKEN
 
 
-def test_an_unreachable_index_is_not_held_against_the_token(monkeypatch):
-    monkeypatch.setattr(auth.requests, "post", answering(None))
+def test_an_unreachable_index_is_not_held_against_the_token():
     said: list[str] = []
 
-    assert auth.verify_token("pypi-abc", notify=said.append) == "pypi-abc"
+    token = auth.verify_token(TOKEN, notify=said.append, post=FakeIndex(None).post)
+
+    assert token == TOKEN
     assert "Could not reach PyPI" in said[0]
 
 
-def test_the_format_is_checked_before_the_network(monkeypatch):
+def test_the_format_is_checked_before_the_network():
     def explode(*_, **__):  # pragma: no cover
         raise AssertionError("a malformed token is not worth a request")
 
-    monkeypatch.setattr(auth.requests, "post", explode)
-
     with pytest.raises(VommitError, match="starts with"):
-        auth.verify_token("hunter2")
+        auth.verify_token("hunter2", post=explode)
 
 
-def test_an_index_that_answers_success_is_accepted(monkeypatch):
+def test_an_index_that_answers_success_is_accepted():
     # not what upload.pypi.org does for an empty body, but a private index might
-    monkeypatch.setattr(auth.requests, "post", answering(200))
-
-    assert auth.verify_token("pypi-abc") == "pypi-abc"
+    assert auth.verify_token(TOKEN, post=FakeIndex(200).post) == TOKEN
 
 
-def test_the_probe_sends_a_body_and_token_auth(monkeypatch):
+def test_the_probe_sends_a_body_and_token_auth():
     # regression: an empty POST to /legacy/ is answered 405 before the
     # credentials are looked at, so every token came back accepted
-    seen: dict = {}
-    monkeypatch.setattr(auth.requests, "post", answering(400, seen))
+    index = FakeIndex(400)
 
-    auth.verify_token("pypi-abc")
+    auth.verify_token(TOKEN, post=index.post)
 
-    assert seen["auth"] == ("__token__", "pypi-abc")
-    assert seen["data"] == auth.UPLOAD_FORM
-    assert seen["data"], "an empty body never reaches authentication"
+    assert index.seen["auth"] == ("__token__", TOKEN)
+    assert index.seen["data"] == auth.UPLOAD_FORM
+    assert index.seen["data"], "an empty body never reaches authentication"
 
 
-def test_a_405_is_not_taken_as_approval(monkeypatch):
+def test_the_probe_talks_to_the_upload_endpoint():
+    index = FakeIndex(400)
+
+    auth.verify_token(TOKEN, post=index.post)
+
+    assert index.seen["url"] == auth.UPLOAD_URL
+    assert index.seen["timeout"] == 10.0
+
+
+def test_a_405_is_not_taken_as_approval():
     # what the broken version got every time; it must not read as "fine"
-    monkeypatch.setattr(auth.requests, "post", answering(405))
     said: list[str] = []
 
-    auth.verify_token("pypi-abc", notify=said.append)
+    auth.verify_token(TOKEN, notify=said.append, post=FakeIndex(405).post)
 
     assert said == [], "405 is not a rejection, but it is not a blessing either"
 
@@ -259,20 +219,20 @@ def test_a_405_is_not_taken_as_approval(monkeypatch):
 # --- forgetting and showing ---------------------------------------------------
 
 
-def test_forget_token_removes_it(fake_keyring):
-    auth.store_token("pypi-abc")
+def test_forget_token_removes_it(store):
+    store.store(TOKEN)
 
-    assert auth.forget_token() is True
-    assert auth.stored_token() is None
-
-
-def test_forget_token_is_false_when_there_was_nothing(fake_keyring):
-    assert auth.forget_token() is False
+    assert store.forget() is True
+    assert store.stored() is None
 
 
-def test_forget_token_reports_a_broken_backend(broken_keyring):
+def test_forget_token_is_false_when_there_was_nothing(store):
+    assert store.forget() is False
+
+
+def test_forget_token_reports_a_broken_backend(broken):
     with pytest.raises(VommitError, match="Could not clear the keyring"):
-        auth.forget_token()
+        broken.forget()
 
 
 def test_mask_shows_the_ends_of_a_real_token():
@@ -287,18 +247,18 @@ def test_mask_of_something_short_gives_away_only_the_tail():
     assert auth.mask("pypi-123") == "...-123"
 
 
-def test_available_token_prefers_the_environment(fake_keyring, monkeypatch):
-    fake_keyring.stored[("vommit", "pypi")] = "pypi-stored"
+def test_available_token_prefers_the_environment(store, monkeypatch):
+    store.store("pypi-stored")
     monkeypatch.setenv(auth.TOKEN_VAR, "pypi-env")
 
-    assert auth.available_token() == (auth.ENVIRONMENT, "pypi-env")
+    assert store.available() == (auth.ENVIRONMENT, "pypi-env")
 
 
-def test_available_token_falls_back_to_the_keyring(fake_keyring):
-    fake_keyring.stored[("vommit", "pypi")] = "pypi-stored"
+def test_available_token_falls_back_to_the_keyring(store):
+    store.store("pypi-stored")
 
-    assert auth.available_token() == (auth.KEYRING, "pypi-stored")
+    assert store.available() == (auth.KEYRING, "pypi-stored")
 
 
-def test_available_token_is_none_when_there_is_nothing(fake_keyring):
-    assert auth.available_token() is None
+def test_available_token_is_none_when_there_is_nothing(store):
+    assert store.available() is None

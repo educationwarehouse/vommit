@@ -4,9 +4,12 @@ import typing as t
 import dataclasses as dc
 from pathlib import Path
 
+import keyring.errors
 import pytest
+import requests
 import tomlkit
 
+from src.vommit.auth import TOKEN_VAR
 from src.vommit.shell import CommandResult, LocalRunner
 
 PYPROJECT_TEMPLATE = """
@@ -78,6 +81,71 @@ class FakeRunner:
 
     def ran(self, needle: str) -> bool:
         return any(needle in call for call in self.calls)
+
+
+@dc.dataclass
+class FakeKeyring:
+    """
+    A keyring backed by a dictionary; the real one wants a session daemon.
+
+    Handed to `TokenStore(backend=...)` rather than patched over the module, so
+    a test can hold two of these at once and neither leaks into the next test.
+    """
+
+    stored: dict[tuple[str, str], str] = dc.field(default_factory=dict)
+
+    def get_password(self, service: str, username: str) -> str | None:
+        return self.stored.get((service, username))
+
+    def set_password(self, service: str, username: str, password: str) -> None:
+        self.stored[(service, username)] = password
+
+    def delete_password(self, service: str, username: str) -> None:
+        if (service, username) not in self.stored:
+            raise keyring.errors.PasswordDeleteError("not found")
+        del self.stored[(service, username)]
+
+
+@dc.dataclass
+class BrokenKeyring:
+    """
+    A machine with no keyring backend, which is the default on headless Linux.
+    """
+
+    def _fail(self) -> t.NoReturn:
+        raise keyring.errors.NoKeyringError("No recommended backend was available")
+
+    def get_password(self, service: str, username: str) -> str | None:
+        self._fail()
+
+    def set_password(self, service: str, username: str, password: str) -> None:
+        self._fail()
+
+    def delete_password(self, service: str, username: str) -> None:
+        self._fail()
+
+
+@dc.dataclass
+class FakeIndex:
+    """
+    Stands in for `requests.post`, so no test needs the network.
+
+    Records the one request it is given, which is what the regression test for
+    the empty-body probe checks: an upload with no body never reaches auth.
+    """
+
+    status: int | None = 400
+    seen: dict[str, t.Any] = dc.field(default_factory=dict)
+
+    def post(self, url: str, **kwargs: t.Any) -> "FakeIndex":
+        self.seen = {"url": url, **kwargs}
+        if self.status is None:
+            raise requests.ConnectionError("unreachable")
+        return self
+
+    @property
+    def status_code(self) -> int:
+        return t.cast(int, self.status)
 
 
 class Sandbox:
@@ -187,3 +255,14 @@ def sandbox(tmp_path: Path) -> t.Iterator[Sandbox]:
     box = Sandbox(tmp_path)
     box.create()
     yield box
+
+
+@pytest.fixture(autouse=True)
+def no_env_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    Nobody's real `UV_PUBLISH_TOKEN` decides what these tests see.
+
+    The environment is process-global whatever we do, so this one stays a
+    `monkeypatch`; a test that wants a token there sets it explicitly.
+    """
+    monkeypatch.delenv(TOKEN_VAR, raising=False)

@@ -20,12 +20,9 @@ from .auth import (
     KEYRING,
     PROMPT,
     TOKEN_VAR,
+    TokenStore,
     environment_token,
-    forget_token,
     mask,
-    require_token,
-    store_token,
-    stored_token,
     verify_token,
 )
 from .bump import BumpRequest, BumpResult, always, run_bump, select_level
@@ -585,17 +582,18 @@ def authenticate(_: Context, no_verify: bool = False, clear: bool = False) -> No
     issues tokens PyPI would not recognise, or --clear to drop the stored token
     before being asked for the new one.
     """
+    store = TokenStore()
     with _reported():
         if clear:
             rich.print(
                 "[yellow]Cleared the stored token.[/yellow]"
-                if forget_token()
+                if store.forget()
                 else "[yellow]No stored token to clear.[/yellow]"
             )
 
-        existing = stored_token()
+        existing = store.stored()
         token = _ask_token(replacing=bool(existing))
-        store_token(token if no_verify else _verified(token, existing))
+        store.store(token if no_verify else _verified(token, existing))
     rich.print("[green]Token stored.[/green]")
 
 
@@ -650,14 +648,15 @@ def _sourced_token(config: Config) -> tuple[str, str]:
         asked = _ask_token(replacing=False, storing=False)
         return PROMPT, verify_token(asked, notify=_notify)
 
-    if token := stored_token():
+    store = TokenStore()
+    if token := store.stored():
         return KEYRING, token
     if not sys.stdin.isatty():
         # the message names both ways out, so a CI failure is actionable
-        return KEYRING, require_token()
+        return KEYRING, store.require()
 
     token = verify_token(_ask_token(replacing=False), notify=_notify)
-    store_token(token)
+    store.store(token)
     return PROMPT, token
 
 
