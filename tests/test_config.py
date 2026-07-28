@@ -175,21 +175,6 @@ def test_pypi_defaults():
     assert not hasattr(config, "username")
 
 
-def test_commands_release_template():
-    config = CommandConfig.load(
-        {
-            "clean": "rm -rf dist",
-            "build": "python -m build",
-            "publish": "twine upload dist/*",
-            "release": "{clean} ; {build} ; {publish}",
-        },
-    )
-
-    assert (
-        config.release_command == "rm -rf dist ; python -m build ; twine upload dist/*"
-    )
-
-
 def test_version_bump_map_config():
     config = Config.load(
         {

@@ -44,6 +44,9 @@ also fixes the same latent problem for single commands: a user writing `rm -rf d
 
 ### 2. `commands.release` stays as a full override
 
+> **Reversed during review — see "Revised after review" below.** The setting is gone; the
+> three commands always run individually.
+
 When `commands.release` differs from its class default, it runs as one `bash -c` blob and
 the individual steps are skipped. Users keep arbitrary pipelines.
 
@@ -64,6 +67,10 @@ The prompt reuses `_asker` (`tasks.py:141-162`), which already encodes the wante
 in `pyproject.toml`; it still runs the branch and freshness checks.
 
 ### 4. PyPI authentication
+
+> **Extended during review — see "Revised after review" below.** The environment is now
+> tried first, `use_keyring = false` prompts instead of doing nothing, keyring failures are
+> translated, and a stored token is checked against PyPI.
 
 vommit reads the token itself and passes it as an environment variable, matching the
 existing `edwh` implementation:
@@ -246,3 +253,53 @@ directly, but the pipeline is meaningless without it.
   itself. Dropping the `flags` option gives the wanted `--no-bump`.
 - A step that failed was still printed in green, because the error was raised after the
   reporting context manager had already closed. The raise now happens inside it.
+
+## Revised after review
+
+Three things came back from reviewing the first implementation. All are in.
+
+### `commands.release` is gone
+
+Two shapes of `--noop` output — three named steps by default, one `release:` blob when the
+template was customised — read as a bug rather than as a feature. The template is removed
+rather than made consistent: `clean`, `build` and `publish` always run as three separate
+commands, in that order, with the push between building and publishing. There is now one
+pipeline, so there is one output.
+
+A step is switched off by leaving its command empty, which is also how `migrate` now
+expresses v7's `remove_dist = false` (previously `commands.release = "{build} && {publish}"`).
+A leftover `release = "..."` in an existing `pyproject.toml` is ignored rather than rejected —
+configuraptor tolerates unknown keys, which was checked before removing the field.
+
+### `use_keyring = false` prompts instead of doing nothing
+
+It used to mean "vommit sets no credentials and uv reads the environment", which is why it
+silently never asked for anything. It now means "ask me every time": the token is prompted
+for, used for that release, and not written anywhere.
+
+The full resolution order, for both settings:
+
+1. `UV_PUBLISH_TOKEN` in the environment — so CI needs no keyring and is never prompted;
+2. the keyring, when `use_keyring = true`;
+3. the person at the keyboard;
+4. a refusal naming both `UV_PUBLISH_TOKEN` and `vommit authenticate`, when there is no
+   terminal to ask on.
+
+### keyring errors were escaping as tracebacks
+
+`keyring.get_password` raises `NoKeyringError` on any machine without a backend — headless
+Linux, a locked keyring, no `keyrings.alt` — and `auth.py` did not catch it, so it went
+straight past `_reported()` as a stack trace. Both reads and writes now raise `VommitError`
+naming the three ways out.
+
+### Tokens are checked before they are stored
+
+`vommit authenticate` now verifies in two stages: the token must start with `pypi-`, and it
+is then offered to `https://upload.pypi.org/legacy/` over basic auth. An empty upload is
+malformed on purpose, so a token that works gets as far as being told the request is
+incomplete (400) while one that does not is rejected outright (401/403).
+
+Two deliberate limits. An index that cannot be reached is *not* held against the token —
+refusing to store one because the network is down would be its own kind of wrong. And
+`--no-verify` skips both stages, for an index that issues tokens PyPI would not recognise.
+The real check remains the upload itself; this only catches the half-pasted clipboard.

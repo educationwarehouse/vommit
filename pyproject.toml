@@ -101,7 +101,6 @@ use_keyring = true
 clean = "rm -rf ./dist"
 build = "uv build"
 publish = "uv publish"
-release = "{clean} && {build} && {publish}"
 
 [tool.vommit.version_bump_map]
 break = "major"

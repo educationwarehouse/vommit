@@ -29,10 +29,6 @@ PYPROJECT = "pyproject.toml"
 CLEAN = "clean"
 BUILD = "build"
 PUBLISH = "publish"
-PIPELINE = "release"
-
-# the steps that upload, and so the only ones that get to see the token
-CREDENTIALED = frozenset({PUBLISH, PIPELINE})
 
 #: Asks whether to publish the current version when no bump was warranted.
 ConfirmVersion = t.Callable[[str], bool]
@@ -125,12 +121,13 @@ def run_release(
     git = config.active_git
     commands = config.commands
     pypi = config.active_pypi
-    steps = _plan(commands, bool(pypi), notify)
+    steps = _plan(commands, bool(pypi))
 
     # credentials are resolved before the first write, for the same reason bump
     # checks the tag before creating the commit: discovering afterwards that
     # there is no token would leave a pushed release with nothing on PyPI.
-    token = authenticate() if pypi and pypi.use_keyring and not request.noop else None
+    publishing = any(step.name == PUBLISH for step in steps)
+    token = authenticate() if publishing and not request.noop else None
 
     bumped = None
     if request.no_bump:
@@ -171,7 +168,6 @@ def run_release(
         runner=runner,
         root=root,
         git=git,
-        commands=commands,
         steps=steps,
         version=version,
         bumped=bumped,
@@ -190,29 +186,17 @@ def _current_version(project: UvProject) -> str:
     return version
 
 
-def _plan(
-    commands: CommandConfig | None,
-    publishing: bool,
-    notify: Notify,
-) -> tuple[Step, ...]:
+def _plan(commands: CommandConfig | None, publishing: bool) -> tuple[Step, ...]:
     """
-    The commands to run, either as the three configured steps or as one blob.
+    The commands to run, in order, skipping the ones left empty.
     """
     if not commands:
         return ()
 
-    if commands.overrides_pipeline:
-        if not publishing:
-            notify(
-                "commands.release is set by hand, so it runs as written; "
-                "pypi.enabled = false cannot switch off a step inside it."
-            )
-        return (Step(PIPELINE, commands.release_command),)
-
-    planned = [Step(CLEAN, commands.clean), Step(BUILD, commands.build)]
+    configured = [(CLEAN, commands.clean), (BUILD, commands.build)]
     if publishing:
-        planned.append(Step(PUBLISH, commands.publish))
-    return tuple(planned)
+        configured.append((PUBLISH, commands.publish))
+    return tuple(Step(name, command) for name, command in configured if command.strip())
 
 
 def _execute(
@@ -220,7 +204,6 @@ def _execute(
     runner: Runner,
     root: Path,
     git: GitConfig | None,
-    commands: CommandConfig | None,
     steps: tuple[Step, ...],
     version: str,
     bumped: BumpResult | None,
@@ -229,13 +212,10 @@ def _execute(
     report_step: StepReporter,
 ) -> ReleaseResult:
     """
-    Run the plan, pushing between building and publishing where that is possible.
+    Run the plan, with the push slotted in between building and publishing.
     """
-    overriding = bool(commands and commands.overrides_pipeline)
-    # a hand-written pipeline is one command, so nothing can be slotted into it;
-    # pushing first at least keeps PyPI from getting a version git does not have
-    before_push = () if overriding else tuple(s for s in steps if s.name != PUBLISH)
-    after_push = steps if overriding else tuple(s for s in steps if s.name == PUBLISH)
+    before_push = tuple(step for step in steps if step.name != PUBLISH)
+    after_push = tuple(step for step in steps if step.name == PUBLISH)
 
     for step in before_push:
         _run(runner, root, step, token, report_step, _undoable(version, bumped))
@@ -314,7 +294,7 @@ def _run(
     report_step: StepReporter,
     aftermath: str,
 ) -> None:
-    env = publish_env(token) if step.name in CREDENTIALED else None
+    env = publish_env(token) if step.name == PUBLISH else None
     # raised inside the reporter, so that a step which failed is not also
     # reported as having finished
     with report_step(step.name):

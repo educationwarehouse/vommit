@@ -46,9 +46,9 @@ When no commit warrants a bump, vommit asks whether to publish the current versi
 `--no-bump` answers that up front, which is also how you retry after a publish that failed: the
 commit and tag are already in place, so only the upload is repeated.
 
-Set `commands.release` to something other than its default to take over the pipeline entirely. It
-then runs as a single command, and because nothing can be slotted into it, the push happens before
-it rather than in the middle.
+The three commands come from `[tool.vommit.commands]` and always run in that order. Leave one
+empty to skip it: a project with nothing to clean sets `clean = ""` rather than hunting for a
+command that does nothing.
 
 ### PyPI credentials
 
@@ -56,13 +56,21 @@ it rather than in the middle.
 vommit authenticate
 ```
 
-Stores a PyPI token in your keyring under `vommit`/`pypi`, replacing any token already there.
-`vommit ensure-authenticated` asks only when nothing is stored yet, and works as a `pre` task.
-During a release the token is passed to the publish command as `UV_PUBLISH_TOKEN` and to nothing
-else, so `clean` and `build` never see it.
+Stores a PyPI token in your keyring under `vommit`/`pypi`, replacing any token already there. The
+token is checked before it is stored — it has to look like a PyPI token, and PyPI has to accept it
+— so a half-pasted clipboard is caught now rather than at the end of a release. An index that
+cannot be reached is not held against the token; `--no-verify` skips the check entirely, for an
+index that issues a different kind of token.
 
-Set `pypi.use_keyring = false` to leave credentials entirely to the environment, or
-`pypi.enabled = false` to build without publishing.
+`vommit ensure-authenticated` asks only when nothing is available yet, and works as a `pre` task.
+
+A release looks for the token in three places, in order: `UV_PUBLISH_TOKEN` in the environment,
+then the keyring, then you. It is passed to the publish command as `UV_PUBLISH_TOKEN` and to
+nothing else, so `clean` and `build` never see it.
+
+Set `pypi.use_keyring = false` to be asked for the token on every release instead of storing it,
+or `pypi.enabled = false` to build without publishing. Either way, a token already in the
+environment is used as-is, which is what makes CI work without a keyring at all.
 
 > Note: values in `[tool.vommit]` are read with environment-variable interpolation, so a `$VAR`
 > written in a command is expanded when the config loads rather than by the shell that runs it. Put

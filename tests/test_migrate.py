@@ -262,8 +262,8 @@ def test_dist_path_becomes_the_clean_command(tmp_path):
 def test_remove_dist_off_drops_the_clean_step(tmp_path):
     config = translate(psr(tmp_path, "remove_dist = false\n")).config
 
-    assert "{clean}" not in config.commands.release
-    assert config.commands.release_command == "uv build && uv publish"
+    assert config.commands.clean == ""
+    assert config.commands.build == "uv build"
 
 
 def test_either_upload_switch_disables_publishing(tmp_path):

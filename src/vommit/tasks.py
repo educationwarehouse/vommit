@@ -15,7 +15,14 @@ from ewok import Context, task
 from invoke import Exit
 from rich.markup import escape
 
-from .auth import require_token, store_token, stored_token
+from .auth import (
+    TOKEN_VAR,
+    environment_token,
+    require_token,
+    store_token,
+    stored_token,
+    verify_token,
+)
 from .bump import BumpRequest, BumpResult, always, run_bump, select_level
 from .changelog import Changelog
 from .config import DERIVE_BRANCH, TOML_KEY, Config
@@ -563,43 +570,66 @@ def _undo(
 
 
 @task()
-def authenticate(_: Context) -> None:
+def authenticate(_: Context, no_verify: bool = False) -> None:
     """
     Store a PyPI token in the keyring, replacing any token already there.
+
+    The token is checked against PyPI before it is stored, so a mistyped one is
+    caught now rather than at the end of a release. Pass --no-verify for an
+    index that issues tokens PyPI would not recognise.
     """
     with _reported():
-        store_token(_ask_token(replacing=bool(stored_token())))
+        token = _ask_token(replacing=bool(stored_token()))
+        store_token(token if no_verify else verify_token(token, notify=_notify))
     rich.print("[green]Token stored.[/green]")
 
 
 @task()
 def ensure_authenticated(_: Context) -> None:
     """
-    Make sure a PyPI token is stored, asking for one only when it is missing.
+    Make sure a PyPI token is available, asking only when there is none.
 
-    Usable as a `pre` task; `release` calls it in-process instead, so that a
-    `--noop` run is not stopped to ask for a credential it will never use.
+    Usable as a `pre` task; `release` calls the same resolution in-process, so
+    that a `--noop` run is not stopped for a credential it will never use.
     """
     with _reported():
-        _token()
+        _token(Config.from_pyproject())
 
 
-def _token() -> str:
+def _token(config: Config) -> str:
     """
-    The stored token, or one typed in now, on a terminal that can ask.
+    A token from the environment, the keyring, or the person at the keyboard.
+
+    `pypi.use_keyring = false` means "ask me every time": the token is used for
+    this release and not written anywhere.
     """
+    if token := environment_token():
+        return token
+
+    pypi = config.active_pypi
+    if pypi and not pypi.use_keyring:
+        return verify_token(_ask_token(replacing=False, storing=False), notify=_notify)
+
     if token := stored_token():
         return token
     if not sys.stdin.isatty():
-        # the message names the command to run, so a CI failure is actionable
+        # the message names both ways out, so a CI failure is actionable
         return require_token()
-    store_token(token := _ask_token(replacing=False))
+
+    token = verify_token(_ask_token(replacing=False), notify=_notify)
+    store_token(token)
     return token
 
 
-def _ask_token(replacing: bool) -> str:
+def _ask_token(replacing: bool, storing: bool = True) -> str:
+    if not sys.stdin.isatty():
+        raise VommitError(
+            f"No PyPI token found and no terminal to ask on; set {TOKEN_VAR} "
+            "in the environment, or run `vommit authenticate`."
+        )
     lead = "Replace the stored PyPI token" if replacing else "PyPI token"
-    answer = questionary.password(f"{lead} (input hidden):").ask()
+    tail = "" if storing else ", used once and not stored"
+    answer = questionary.password(f"{lead} (input hidden{tail}):").ask()
     if not answer:
         raise VommitError("No token entered.")
     return str(answer)
@@ -651,7 +681,7 @@ def release(
                 yes=yes,
                 default=False,
             ),
-            authenticate=_token,
+            authenticate=lambda: _token(config),
             report_step=_step,
         )
 

@@ -271,38 +271,17 @@ class PypiConfig(TypedConfig, Defaultable):
     use_keyring: t.Annotated[bool, "Use keyring for PyPI auth?"] = True
 
 
-DEFAULT_RELEASE_PIPELINE: t.Final = "{clean} && {build} && {publish}"
-
-
 class CommandConfig(TypedConfig, Defaultable):
-    clean: t.Annotated[str, "Clean command"] = "rm -rf ./dist"
-    build: t.Annotated[str, "Build command"] = "uv build"
-    publish: t.Annotated[str, "Publish command"] = "uv publish"
+    """
+    The three commands a release runs, in that order.
 
-    release: t.Annotated[
-        str,
-        "Release pipeline command",
-        {"interactive": False},
-    ] = DEFAULT_RELEASE_PIPELINE
+    Leave one empty to skip it: a project that has nothing to clean sets
+    `clean = ""` rather than finding a command that does nothing.
+    """
 
-    @property
-    def release_command(self) -> str:
-        return self.release.format(
-            clean=self.clean,
-            build=self.build,
-            publish=self.publish,
-        )
-
-    @property
-    def overrides_pipeline(self) -> bool:
-        """
-        Whether `release` was written by hand rather than left at its default.
-
-        A hand-written pipeline is run as one command, which is the only way to
-        honour it; the cost is that vommit can no longer slot the push between
-        building and publishing, so it pushes first.
-        """
-        return self.release.strip() != DEFAULT_RELEASE_PIPELINE
+    clean: t.Annotated[str, "Clean command (empty to skip)"] = "rm -rf ./dist"
+    build: t.Annotated[str, "Build command (empty to skip)"] = "uv build"
+    publish: t.Annotated[str, "Publish command (empty to skip)"] = "uv publish"
 
 
 def _if_enabled[SectionT: TypedConfig](section: SectionT | None) -> SectionT | None:

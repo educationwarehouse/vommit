@@ -195,15 +195,29 @@ def test_the_token_is_read_before_anything_is_written(sandbox):
     assert ledger(sandbox) == []
 
 
-def test_keyring_is_not_consulted_when_it_is_switched_off(sandbox):
-    script = recorder(sandbox, "show-token.sh", f'echo "t[$UV_PUBLISH_TOKEN]" >> {LEDGER}')
-    with_pipeline(sandbox, publish=script)
-    with_pypi(sandbox, use_keyring=False)
+def test_an_empty_command_skips_that_step(sandbox):
+    with_pipeline(sandbox, clean="")
+    with_pypi(sandbox)
     sandbox.commits("feat: something releasable")
 
-    release(sandbox, authenticate=lambda: pytest.fail("should not authenticate"))
+    result = release(sandbox)
 
-    assert "t[]" in ledger(sandbox)
+    assert [step.name for step in result.steps] == ["build", "publish"]
+    assert ledger(sandbox) == ["build", "publish"]
+
+
+def test_an_empty_publish_command_asks_for_no_token(sandbox):
+    with_pipeline(sandbox, publish="")
+    with_pypi(sandbox)
+    sandbox.commits("feat: something releasable")
+
+    result = release(
+        sandbox,
+        authenticate=lambda: pytest.fail("nothing publishes, so nothing needs a token"),
+    )
+
+    assert result.published is False
+    assert ledger(sandbox) == ["clean", "build"]
 
 
 # --- pypi disabled, no commands ----------------------------------------------
@@ -265,45 +279,6 @@ def test_nothing_is_pushed_when_git_is_disabled(sandbox):
     assert result.pushed is False
     assert remote_tags(sandbox) == []
     assert ledger(sandbox) == ["clean", "build", "publish"]
-
-
-# --- the custom pipeline -----------------------------------------------------
-
-
-def test_a_custom_pipeline_runs_as_one_command(sandbox):
-    with_pipeline(sandbox, release=f"echo custom >> {LEDGER} && echo done >> {LEDGER}")
-    with_pypi(sandbox)
-    sandbox.commits("feat: something releasable")
-
-    result = release(sandbox)
-
-    assert ledger(sandbox) == ["custom", "done"]
-    assert [step.name for step in result.steps] == ["release"]
-
-
-def test_a_custom_pipeline_is_pushed_to_first(sandbox):
-    # it cannot be interleaved, so pushing first is what keeps PyPI behind git
-    with_pipeline(
-        sandbox,
-        release=f"git -C {sandbox.work} ls-remote --tags origin >> {LEDGER}",
-    )
-    with_pypi(sandbox)
-    sandbox.commits("feat: something releasable")
-
-    release(sandbox)
-
-    assert "refs/tags/v0.2.0" in " ".join(ledger(sandbox))
-
-
-def test_a_custom_pipeline_says_that_pypi_enabled_cannot_reach_into_it(sandbox):
-    with_pipeline(sandbox, release=f"echo custom >> {LEDGER}")
-    sandbox.set_config("tool.vommit.pypi", enabled=False)
-    sandbox.commits("feat: something releasable")
-
-    messages: list[str] = []
-    release(sandbox, notify=messages.append)
-
-    assert any("runs as written" in message for message in messages)
 
 
 # --- noop --------------------------------------------------------------------
