@@ -10,6 +10,7 @@ requires-python = ">=3.13"
 dependencies = [
     "configuraptor >= 2.5.4, < 3",
     "ewok",
+    "keyring",
     "packaging",
     "questionary >= 2, < 3",
     "rich",
@@ -94,11 +95,10 @@ docs = "Documentation"
 
 [tool.vommit.pypi]
 enabled = true
-username = "__token__"
 use_keyring = true
 
 [tool.vommit.commands]
-clean = "rm -r ./dist"
+clean = "rm -rf ./dist"
 build = "uv build"
 publish = "uv publish"
 release = "{clean} && {build} && {publish}"

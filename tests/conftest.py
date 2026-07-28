@@ -43,6 +43,7 @@ class FakeRunner:
     responses: dict[str, CommandResult] = dc.field(default_factory=dict)
     default: CommandResult = CommandResult("", 0, "", "")
     calls: list[str] = dc.field(default_factory=list)
+    envs: list[dict[str, str] | None] = dc.field(default_factory=list)
 
     def reply(
         self,
@@ -54,12 +55,26 @@ class FakeRunner:
         self.responses[contains] = CommandResult(contains, returncode, stdout, stderr)
         return self
 
-    def run(self, command: str) -> CommandResult:
+    def run(
+        self,
+        command: str,
+        env: dict[str, str] | None = None,
+    ) -> CommandResult:
         self.calls.append(command)
+        self.envs.append(env)
         for needle, result in self.responses.items():
             if needle in command:
                 return result
         return self.default
+
+    def env_for(self, needle: str) -> dict[str, str] | None:
+        """
+        The environment handed to the first command matching `needle`.
+        """
+        for command, env in zip(self.calls, self.envs):
+            if needle in command:
+                return env
+        return None
 
     def ran(self, needle: str) -> bool:
         return any(needle in call for call in self.calls)

@@ -154,59 +154,95 @@ someone else's unreviewed commit.
 
 ### Foundations
 
-- [ ] Add `keyring` to `[project].dependencies` in `pyproject.toml`
-- [ ] Add `env: dict[str, str] | None = None` to the `Runner` protocol (`shell.py:32-40`)
-- [ ] Implement `env` in `LocalRunner.run` (`shell.py:48`) and `ContextRunner.run`
+- [x] Add `keyring` to `[project].dependencies` in `pyproject.toml`
+- [x] Add `env: dict[str, str] | None = None` to the `Runner` protocol (`shell.py:32-40`)
+- [x] Implement `env` in `LocalRunner.run` (`shell.py:48`) and `ContextRunner.run`
       (`shell.py:71`); keep it off `CommandResult`
-- [ ] Add a `shell()` helper that wraps a command in `bash -c`
-- [ ] Add `env` support to `FakeRunner` (`conftest.py:57`) and assert the token never lands
+- [x] Add a `shell()` helper that wraps a command in `bash -c`
+- [x] Add `env` support to `FakeRunner` (`conftest.py:57`) and assert the token never lands
       in `calls`
 
 ### Git
 
-- [ ] `GitRepo.push(origin, branch)` (`git.py`)
-- [ ] `GitRepo.push_tag(origin, tag)`, pushing `refs/tags/<tag>` explicitly
-- [ ] Tests for both, including the failure messages
+- [x] `GitRepo.push(origin, branch)` (`git.py`)
+- [x] `GitRepo.push_tag(origin, tag)`, pushing `refs/tags/<tag>` explicitly
+- [x] Tests for both, including the failure messages
 
 ### Config
 
-- [ ] Remove `PypiConfig.username` (`config.py:269`)
-- [ ] Update `test_pypi_defaults` (`test_config.py:170`) and the interactive `PypiConfig`
+- [x] Remove `PypiConfig.username` (`config.py:269`)
+- [x] Update `test_pypi_defaults` (`test_config.py:170`) and the interactive `PypiConfig`
       prompts
-- [ ] Confirm `migrate.py` needs no change (it maps only `pypi.enabled`, `migrate.py:651`)
-- [ ] Add a `CommandConfig` helper reporting whether `release` was customised away from its
+- [x] Confirm `migrate.py` needs no change (it maps only `pypi.enabled`, `migrate.py:651`)
+- [x] Add a `CommandConfig` helper reporting whether `release` was customised away from its
       default
 
 ### Authentication
 
-- [ ] `keyring` read/write helpers on the `("vommit", "pypi")` namespace
-- [ ] `authenticate` task: always prompt, always overwrite
-- [ ] `ensure_authenticated` task: prompt only when the token is missing
-- [ ] Tests, including the non-TTY path
+- [x] `keyring` read/write helpers on the `("vommit", "pypi")` namespace
+- [x] `authenticate` task: always prompt, always overwrite
+- [x] `ensure_authenticated` task: prompt only when the token is missing
+- [x] Tests, including the non-TTY path
 
 ### Release
 
-- [ ] `release.py` with `ReleaseRequest` / `ReleaseResult` / `run_release`, mirroring
+- [x] `release.py` with `ReleaseRequest` / `ReleaseResult` / `run_release`, mirroring
       `bump.py`'s shape
-- [ ] Default pipeline: bump -> clean -> build -> push -> publish
-- [ ] Override pipeline: push -> `bash -c "{release}"`
-- [ ] `--no-bump`, plus the "publish the current version anyway?" prompt
-- [ ] `--noop`: stop after the bump preview, print the commands
-- [ ] Per-step failure messages naming the step and the state it left behind
-- [ ] 403 hint pointing at `vommit authenticate`
-- [ ] Spinner per step, forwarding captured output on failure
+- [x] Default pipeline: bump -> clean -> build -> push -> publish
+- [x] Override pipeline: push -> `bash -c "{release}"`
+- [x] `--no-bump`, plus the "publish the current version anyway?" prompt
+- [x] `--noop`: stop after the bump preview, print the commands
+- [x] Per-step failure messages naming the step and the state it left behind
+- [x] 403 hint pointing at `vommit authenticate`
+- [x] Spinner per step, forwarding captured output on failure
 
 ### Task layer
 
-- [ ] Rewrite the `release` task (`tasks.py:526`) with full flag parity, sharing
+- [x] Rewrite the `release` task (`tasks.py:526`) with full flag parity, sharing
       `BumpRequest` validation
-- [ ] `_report_release`, following `_report` (`tasks.py:72`) and `_report_undo`
+- [x] `_report_release`, following `_report` (`tasks.py:72`) and `_report_undo`
       (`tasks.py:93`)
 
 ### Verification
 
-- [ ] `tests/test_release.py`
-- [ ] 100% coverage (`[tool.su6] coverage = 100`)
-- [ ] `ruff` and `ty` clean
-- [ ] Document `release` and `authenticate` in `README.md`
-- [ ] Remove the `# todo:` lines at the bottom of `tasks.py` that this work resolves
+- [x] `tests/test_release.py`
+- [x] 100% coverage (`[tool.su6] coverage = 100`)
+- [x] `ruff` and `ty` clean
+- [x] Document `release` and `authenticate` in `README.md`
+- [x] Remove the `# todo:` lines at the bottom of `tasks.py` that this work resolves
+
+## Found while implementing
+
+Four things surfaced that the plan did not anticipate. All are fixed; they are recorded
+here because each one changes something a user can see.
+
+### `clean` failed on every first release
+
+The default `clean` was `rm -r ./dist`, which exits 1 when `./dist` does not exist — that is,
+on every project that has not built yet. Nothing ever ran the command before, so it had never
+failed. It is now `rm -rf ./dist`, in `CommandConfig` (`config.py`), in this project's own
+`pyproject.toml`, and in the command that `migrate` generates from a v7 `dist_path`
+(`migrate.py:628`).
+
+### `$VAR` in a setting is expanded before the shell sees it
+
+configuraptor interpolates environment variables while loading, so `publish = "twine upload
+-p $TWINE_PASSWORD"` is expanded from *vommit's* environment at config-load time rather than
+by the shell that runs the command. That is pre-existing behaviour affecting every string
+setting, not something this branch introduced, but the release pipeline is the first place
+where it matters. Documented in the README; anything needing the shell's own expansion
+belongs in a script.
+
+### Configured commands run from the project root
+
+`_from_root` prefixes each command with `cd <root>`. Without it a command would run in
+whatever directory the CLI was invoked from, and `uv build` would build the wrong project.
+The task layer always passes `Path.cwd()`, so this only shows up when `run_release` is called
+directly, but the pipeline is meaningless without it.
+
+### Two reporting bugs, caught end-to-end rather than by tests
+
+- `@task(flags={"no_bump": ["--no-bump"]})` produced `----no-bump`: ewok adds the dashes
+  itself. Dropping the `flags` option gives the wanted `--no-bump`.
+- A step that failed was still printed in green, because the error was raised after the
+  reporting context manager had already closed. The raise now happens inside it.

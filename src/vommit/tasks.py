@@ -15,6 +15,7 @@ from ewok import Context, task
 from invoke import Exit
 from rich.markup import escape
 
+from .auth import require_token, store_token, stored_token
 from .bump import BumpRequest, BumpResult, always, run_bump, select_level
 from .changelog import Changelog
 from .config import DERIVE_BRANCH, TOML_KEY, Config
@@ -35,6 +36,7 @@ from .migrate import (
     strip_psr,
     translate,
 )
+from .release import ReleaseRequest, ReleaseResult, Step, run_release
 from .shell import ContextRunner
 from .undo import UndoPlan, UndoResult, run_undo
 
@@ -114,6 +116,44 @@ def _undo_steps(plan: UndoPlan) -> list[str]:
     if plan.changelog_path:
         steps.append(f"remove the {plan.version} entry from {plan.changelog_path.name}")
     return steps
+
+
+def _report_release(result: ReleaseResult) -> None:
+    if result.cancelled:
+        rich.print("[yellow]Cancelled; nothing was written.[/yellow]")
+        return
+
+    if result.bump:
+        _report(result.bump)
+    elif result.noop:
+        rich.print(f"[green]Version {result.version}[/green] [dim](noop)[/dim]")
+
+    if result.noop:
+        _report_planned(result.steps)
+        return
+
+    if result.pushed:
+        rich.print("[green]Pushed[/green]")
+    if result.published:
+        rich.print(f"[green]Published[/green] {result.version}")
+
+
+def _report_planned(steps: tuple[Step, ...]) -> None:
+    if not steps:
+        return
+    rich.print("\n[dim]would run:[/dim]")
+    for step in steps:
+        rich.print(f"  [dim]{step.name}:[/dim] {escape(step.command)}")
+
+
+@contextmanager
+def _step(name: str) -> t.Iterator[None]:
+    """
+    Show that a command is running; its output only surfaces when it fails.
+    """
+    with rich.get_console().status(f"[blue]{escape(name)}[/blue]"):
+        yield
+    rich.print(f"[green]{name}[/green]")
 
 
 def _bump_question(result: BumpResult) -> str:
@@ -523,22 +563,106 @@ def _undo(
 
 
 @task()
+def authenticate(_: Context) -> None:
+    """
+    Store a PyPI token in the keyring, replacing any token already there.
+    """
+    with _reported():
+        store_token(_ask_token(replacing=bool(stored_token())))
+    rich.print("[green]Token stored.[/green]")
+
+
+@task()
+def ensure_authenticated(_: Context) -> None:
+    """
+    Make sure a PyPI token is stored, asking for one only when it is missing.
+
+    Usable as a `pre` task; `release` calls it in-process instead, so that a
+    `--noop` run is not stopped to ask for a credential it will never use.
+    """
+    with _reported():
+        _token()
+
+
+def _token() -> str:
+    """
+    The stored token, or one typed in now, on a terminal that can ask.
+    """
+    if token := stored_token():
+        return token
+    if not sys.stdin.isatty():
+        # the message names the command to run, so a CI failure is actionable
+        return require_token()
+    store_token(token := _ask_token(replacing=False))
+    return token
+
+
+def _ask_token(replacing: bool) -> str:
+    lead = "Replace the stored PyPI token" if replacing else "PyPI token"
+    answer = questionary.password(f"{lead} (input hidden):").ask()
+    if not answer:
+        raise VommitError("No token entered.")
+    return str(answer)
+
+
+@task()
 def release(
-    _: Context,
+    c: Context,
     major: bool = False,
     minor: bool = False,
     patch: bool = False,
-) -> None:
+    prerelease: bool = False,
+    noop: bool = False,
+    version: str | None = None,
+    allow_dirty: bool = False,
+    no_bump: bool = False,
+    yes: bool = False,
+) -> str | None:
     """
-    Release:
-    - git pull
-    - bump
-    - git push
-    - (clean dist)
-    - uv build
-    - uv publish
+    Bump, build, push and publish.
+
+    Runs the bump, then the configured clean and build commands, then pushes the
+    commit and its tag, and publishes last: a failure before the push can still
+    be undone, and PyPI never receives a version that the remote does not have.
+    Use --noop to see the plan, and --no-bump to publish the current version.
     """
-    _config = Config.from_pyproject()
+    root = Path.cwd()
+    config = Config.from_pyproject(root)
+
+    with _reported():
+        result = run_release(
+            config=config,
+            runner=ContextRunner(c),
+            root=root,
+            request=ReleaseRequest(
+                bump=BumpRequest(
+                    level=select_level(major, minor, patch),
+                    version=version,
+                    prerelease=prerelease,
+                    noop=noop,
+                    allow_dirty=allow_dirty,
+                ),
+                no_bump=no_bump,
+            ),
+            notify=_notify,
+            confirm=_asker(config, yes, _bump_question),
+            confirm_version=lambda current: _confirm(
+                f"No version-worthy changes found; publish {current} as it is?",
+                yes=yes,
+                default=False,
+            ),
+            authenticate=_token,
+            report_step=_step,
+        )
+
+    if result is None:
+        rich.print("[yellow]Nothing to release.[/yellow]")
+        return None
+
+    _report_release(result)
+    if result.cancelled:
+        raise Exit(code=1)
+    return result.version
 
 
 # todo: 'init' to make a whole new project? = uv init + setup

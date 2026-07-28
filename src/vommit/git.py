@@ -280,6 +280,25 @@ class GitRepo:
         self.ensure_tag_available(name)
         self._checked("tag", name, action=f"create tag '{name}'")
 
+    def push(self, origin: str, branch: str) -> None:
+        self._checked("push", origin, branch, action=f"push '{branch}' to '{origin}'")
+
+    def push_tag(self, origin: str, tag: str) -> None:
+        """
+        Push one tag, by ref.
+
+        Not `--follow-tags`, which silently skips lightweight tags and ours are
+        lightweight, and not `--tags`, which would push every tag lying around
+        the repository. Naming the ref also means a failure here is reported as
+        the tag failing rather than the branch.
+        """
+        self._checked(
+            "push",
+            origin,
+            f"refs/tags/{tag}",
+            action=f"push tag '{tag}' to '{origin}'",
+        )
+
 
 def here(root: str | Path | None = None) -> GitRepo:
     """

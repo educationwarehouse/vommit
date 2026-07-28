@@ -252,10 +252,10 @@ def test_tag_commit_off_clears_the_tag_format(tmp_path):
 
 
 def test_dist_path_becomes_the_clean_command(tmp_path):
-    assert translate(psr(tmp_path)).config.commands.clean == "rm -r ./dist"
+    assert translate(psr(tmp_path)).config.commands.clean == "rm -rf ./dist"
     assert (
         translate(psr(tmp_path, "dist_path = 'build/out/'\n")).config.commands.clean
-        == "rm -r ./build/out"
+        == "rm -rf ./build/out"
     )
 
 

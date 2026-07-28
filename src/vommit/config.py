@@ -266,12 +266,16 @@ class ChangelogConfig(TypedConfig, Defaultable):
 
 class PypiConfig(TypedConfig, Defaultable):
     enabled: t.Annotated[bool, "Enable PyPI publishing?"] = True
-    username: t.Annotated[str, "PyPI username"] = "__token__"
+    # off means "whatever the environment already provides": vommit then sets no
+    # credentials of its own and an ambient UV_PUBLISH_TOKEN still works.
     use_keyring: t.Annotated[bool, "Use keyring for PyPI auth?"] = True
 
 
+DEFAULT_RELEASE_PIPELINE: t.Final = "{clean} && {build} && {publish}"
+
+
 class CommandConfig(TypedConfig, Defaultable):
-    clean: t.Annotated[str, "Clean command"] = "rm -r ./dist"
+    clean: t.Annotated[str, "Clean command"] = "rm -rf ./dist"
     build: t.Annotated[str, "Build command"] = "uv build"
     publish: t.Annotated[str, "Publish command"] = "uv publish"
 
@@ -279,7 +283,7 @@ class CommandConfig(TypedConfig, Defaultable):
         str,
         "Release pipeline command",
         {"interactive": False},
-    ] = "{clean} && {build} && {publish}"
+    ] = DEFAULT_RELEASE_PIPELINE
 
     @property
     def release_command(self) -> str:
@@ -288,6 +292,17 @@ class CommandConfig(TypedConfig, Defaultable):
             build=self.build,
             publish=self.publish,
         )
+
+    @property
+    def overrides_pipeline(self) -> bool:
+        """
+        Whether `release` was written by hand rather than left at its default.
+
+        A hand-written pipeline is run as one command, which is the only way to
+        honour it; the cost is that vommit can no longer slot the push between
+        building and publishing, so it pushes first.
+        """
+        return self.release.strip() != DEFAULT_RELEASE_PIPELINE
 
 
 def _if_enabled[SectionT: TypedConfig](section: SectionT | None) -> SectionT | None:
