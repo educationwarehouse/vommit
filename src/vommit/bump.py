@@ -26,6 +26,14 @@ def always(_: t.Any) -> bool:
     return True
 
 
+def reject_flags(flags: list[str], because: str) -> None:
+    """
+    Refuse flags that contradict the mode the user asked for.
+    """
+    if flags:
+        raise VommitError(f"{because}; drop {' and '.join(flags)}.")
+
+
 @dc.dataclass(frozen=True)
 class BumpRequest:
     level: VersionBump | None = None
@@ -51,11 +59,15 @@ class BumpRequest:
                 "--prerelease would be ignored."
             )
 
-    def _reject_alongside_undo(self) -> None:
+    def targeting_flags(self, include_dirty: bool = True) -> list[str]:
         """
-        --undo takes back the last release; it cannot also aim at a new one.
+        The flags that aim this request at a new version.
+
+        Anything that takes the version as given instead of choosing one
+        (`--undo`, `--no-bump`) has the same set to reject, so the set is
+        written once here rather than once per caller.
         """
-        conflicting = [
+        return [
             f"--{name}"
             for name, given in (
                 ("major", self.level == "major"),
@@ -63,15 +75,16 @@ class BumpRequest:
                 ("patch", self.level == "patch"),
                 ("prerelease", self.prerelease),
                 ("version", bool(self.version)),
-                ("allow-dirty", self.allow_dirty),
+                ("allow-dirty", include_dirty and self.allow_dirty),
             )
             if given
         ]
-        if conflicting:
-            raise VommitError(
-                f"--undo goes back to the previous release; "
-                f"drop {' and '.join(conflicting)}."
-            )
+
+    def _reject_alongside_undo(self) -> None:
+        """
+        --undo takes back the last release; it cannot also aim at a new one.
+        """
+        reject_flags(self.targeting_flags(), "--undo goes back to the previous release")
 
 
 @dc.dataclass(frozen=True)

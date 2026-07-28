@@ -282,6 +282,8 @@ class CommandConfig(TypedConfig, Defaultable):
     clean: t.Annotated[str, "Clean command (empty to skip)"] = "rm -rf ./dist"
     build: t.Annotated[str, "Build command (empty to skip)"] = "uv build"
     publish: t.Annotated[str, "Publish command (empty to skip)"] = "uv publish"
+    # runs only when `publish` did, so it can assume there is something to tidy
+    post_publish: t.Annotated[str, "Command to run after publishing"] = ""
 
 
 def _if_enabled[SectionT: TypedConfig](section: SectionT | None) -> SectionT | None:

@@ -44,7 +44,7 @@ also fixes the same latent problem for single commands: a user writing `rm -rf d
 
 ### 2. `commands.release` stays as a full override
 
-> **Reversed during review — see "Revised after review" below.** The setting is gone; the
+> **Reversed during review, see "Revised after review" below.** The setting is gone; the
 > three commands always run individually.
 
 When `commands.release` differs from its class default, it runs as one `bash -c` blob and
@@ -58,8 +58,7 @@ an opaque pipeline.
 ### 3. `--no-bump`
 
 When no commit warrants a version bump, `run_bump` returns `None` (`bump.py:157`). `release`
-then asks "no version-worthy changes found; publish the current version anyway?" — but only
-when no explicit level flag or `--version` was passed.
+then asks "no version-worthy changes found; publish the current version anyway?": but only when no explicit level flag or `--version` was passed.
 
 The prompt reuses `_asker` (`tasks.py:141-162`), which already encodes the wanted behaviour:
 `--yes` passes straight through, and a missing TTY prints "No terminal to ask on; pass
@@ -68,7 +67,7 @@ in `pyproject.toml`; it still runs the branch and freshness checks.
 
 ### 4. PyPI authentication
 
-> **Extended during review — see "Revised after review" below.** The environment is now
+> **Extended during review, see "Revised after review" below.** The environment is now
 > tried first, `use_keyring = false` prompts instead of doing nothing, keyring failures are
 > translated, and a stored token is checked against PyPI.
 
@@ -80,7 +79,7 @@ token = keyring.get_password("vommit", "pypi")
 runner.run(publish_command, env={"UV_PUBLISH_TOKEN": token})
 ```
 
-- Keyring namespace is `("vommit", "pypi")` — vommit's own, not shared with edwh.
+- Keyring namespace is `("vommit", "pypi")`: vommit's own, not shared with edwh.
 - `Runner.run` gains an `env` parameter (`shell.py:32-40`, `48`, `71`), as does `FakeRunner`
   (`conftest.py:57`).
 - The env dict is deliberately **not** stored on `CommandResult` (`shell.py:10-29`), so a
@@ -117,7 +116,7 @@ possible.
 
 ### 8. Tags stay lightweight
 
-`GitRepo.tag` (`git.py:279`) creates a lightweight tag — a bare pointer to a commit, with no
+`GitRepo.tag` (`git.py:279`) creates a lightweight tag: a bare pointer to a commit, with no
 tagger, timestamp, or message of its own. This is unchanged.
 
 The one thing to avoid is `git push --follow-tags`, which by design refuses to push
@@ -154,7 +153,7 @@ flag-conflict errors (`bump.py:38-75`) are stated in one place rather than two.
 
 The original docstring lists "git pull" as the first step (`tasks.py:534`). That is already
 handled: `ensure_up_to_date` (`git.py:113`) fetches and *refuses* when the branch is behind,
-rather than pulling. The refusal stays — auto-pulling before a release is how you publish
+rather than pulling. The refusal stays: auto-pulling before a release is how you publish
 someone else's unreviewed commit.
 
 ## Todo
@@ -225,7 +224,7 @@ here because each one changes something a user can see.
 
 ### `clean` failed on every first release
 
-The default `clean` was `rm -r ./dist`, which exits 1 when `./dist` does not exist — that is,
+The default `clean` was `rm -r ./dist`, which exits 1 when `./dist` does not exist: that is,
 on every project that has not built yet. Nothing ever ran the command before, so it had never
 failed. It is now `rm -rf ./dist`, in `CommandConfig` (`config.py`), in this project's own
 `pyproject.toml`, and in the command that `migrate` generates from a v7 `dist_path`
@@ -260,15 +259,15 @@ Three things came back from reviewing the first implementation. All are in.
 
 ### `commands.release` is gone
 
-Two shapes of `--noop` output — three named steps by default, one `release:` blob when the
-template was customised — read as a bug rather than as a feature. The template is removed
+Two shapes of `--noop` output: three named steps by default, one `release:` blob when the
+template was customised: read as a bug rather than as a feature. The template is removed
 rather than made consistent: `clean`, `build` and `publish` always run as three separate
 commands, in that order, with the push between building and publishing. There is now one
 pipeline, so there is one output.
 
 A step is switched off by leaving its command empty, which is also how `migrate` now
 expresses v7's `remove_dist = false` (previously `commands.release = "{build} && {publish}"`).
-A leftover `release = "..."` in an existing `pyproject.toml` is ignored rather than rejected —
+A leftover `release = "..."` in an existing `pyproject.toml` is ignored rather than rejected -
 configuraptor tolerates unknown keys, which was checked before removing the field.
 
 ### `use_keyring = false` prompts instead of doing nothing
@@ -279,7 +278,7 @@ for, used for that release, and not written anywhere.
 
 The full resolution order, for both settings:
 
-1. `UV_PUBLISH_TOKEN` in the environment — so CI needs no keyring and is never prompted;
+1. `UV_PUBLISH_TOKEN` in the environment: so CI needs no keyring and is never prompted;
 2. the keyring, when `use_keyring = true`;
 3. the person at the keyboard;
 4. a refusal naming both `UV_PUBLISH_TOKEN` and `vommit authenticate`, when there is no
@@ -287,8 +286,8 @@ The full resolution order, for both settings:
 
 ### keyring errors were escaping as tracebacks
 
-`keyring.get_password` raises `NoKeyringError` on any machine without a backend — headless
-Linux, a locked keyring, no `keyrings.alt` — and `auth.py` did not catch it, so it went
+`keyring.get_password` raises `NoKeyringError` on any machine without a backend: headless
+Linux, a locked keyring, no `keyrings.alt`: and `auth.py` did not catch it, so it went
 straight past `_reported()` as a stack trace. Both reads and writes now raise `VommitError`
 naming the three ways out.
 
@@ -299,7 +298,49 @@ is then offered to `https://upload.pypi.org/legacy/` over basic auth. An empty u
 malformed on purpose, so a token that works gets as far as being told the request is
 incomplete (400) while one that does not is rejected outright (401/403).
 
-Two deliberate limits. An index that cannot be reached is *not* held against the token —
+Two deliberate limits. An index that cannot be reached is *not* held against the token -
 refusing to store one because the network is down would be its own kind of wrong. And
 `--no-verify` skips both stages, for an index that issues tokens PyPI would not recognise.
 The real check remains the upload itself; this only catches the half-pasted clipboard.
+
+## Second review round
+
+### The token check was not checking anything
+
+`probe` POSTed to `upload.pypi.org/legacy/` with an empty body. PyPI answers that with 405
+before it looks at the credentials, and 405 is not in the reject set, so every token was
+accepted. Verified against the real endpoint: an empty POST gives 405, the same POST with
+`:action=file_upload` gives `403 Invalid or non-existent authentication information`.
+The body is now sent, and a test pins it, because the failure mode was silent.
+
+The probe runs from `verify_token`, which `authenticate` and both interactive prompts call.
+`check_format` runs first and returns early, so a bad prefix never costs a request. A token
+read from the keyring during a release is not re-probed: it was checked when it was stored.
+
+### requests instead of urllib
+
+`requests` is already in the tree by way of ewok, so avoiding it bought nothing. It is now an
+explicit dependency and `probe` is five lines.
+
+### keyring over SSH
+
+The default backend is SecretService, which needs a D-Bus session, so it fails on a headless
+or SSH session with `NoKeyringError`. `vommit[ssh]` is a new extra pulling `ssh-agent-keyring`,
+and the keyring error message names it.
+
+### post_publish
+
+A fourth command, empty by default, for tidying up after an upload. It runs only when a
+publish ran, since that is what it is named after, and it does not get the token.
+
+### ReleaseRequest no longer restates BumpRequest
+
+`--undo` and `--no-bump` both refuse the flags that aim at a specific version. That set now
+lives in `BumpRequest.targeting_flags`, with `reject_flags` for the message. `--no-bump` keeps
+allowing `--allow-dirty`, since the build still runs.
+
+### `refs/tags/<tag>` versus `--tags`
+
+Not the same thing. `--tags` pushes every tag in the repository, including stale local ones;
+the explicit ref pushes exactly the release tag. The full ref rather than the bare name also
+avoids the ambiguity when a branch shares the tag's name.

@@ -10,34 +10,35 @@ Three places are tried, in this order: the environment (so CI needs nothing set
 up), the keyring, and finally the person at the keyboard.
 """
 
-import base64
 import os
 import typing as t
-import urllib.error
-import urllib.request
 
 import keyring
 import keyring.errors
+import requests
 
 from .errors import VommitError
 
-SERVICE: t.Final = "vommit"
-USERNAME: t.Final = "pypi"
+SERVICE = "vommit"
+USERNAME = "pypi"
 
-TOKEN_VAR: t.Final = "UV_PUBLISH_TOKEN"
-TOKEN_PREFIX: t.Final = "pypi-"
+TOKEN_VAR = "UV_PUBLISH_TOKEN"
+TOKEN_PREFIX = "pypi-"
 
-UPLOAD_URL: t.Final = "https://upload.pypi.org/legacy/"
-# an upload that authenticates but says nothing else is answered with 400; only
-# the credentials themselves are rejected with a 401 or a 403
-REJECTED: t.Final = frozenset({401, 403})
+UPLOAD_URL = "https://upload.pypi.org/legacy/"
+# enough of an upload for the index to authenticate it before finding it wanting
+UPLOAD_FORM = {":action": "file_upload", "protocol_version": "1"}
+# only the credentials themselves are answered with a 401 or a 403; anything
+# else means the request got past authentication and failed on its own merits
+REJECTED = frozenset({401, 403})
 
 Authenticate = t.Callable[[], str]
 Notify = t.Callable[[str], None]
 
 _NO_BACKEND = (
-    "Install a keyring backend, or set `pypi.use_keyring = false` to be asked "
-    f"for the token instead, or set {TOKEN_VAR} in the environment."
+    "Over SSH or on a headless machine, install `vommit[ssh]` for a backend "
+    "that works through ssh-agent. Otherwise set `pypi.use_keyring = false` to "
+    f"be asked for the token instead, or set {TOKEN_VAR} in the environment."
 )
 
 
@@ -111,19 +112,24 @@ def probe(token: str, url: str = UPLOAD_URL, timeout: float = 10.0) -> int | Non
     """
     What the index answers to these credentials, or None if it was unreachable.
 
-    An empty upload is deliberately malformed: a token that works gets as far as
-    being told the request is incomplete, one that does not never gets that far.
+    The upload announces itself and then says nothing else, which is deliberate:
+    a token that works gets as far as being told the request is incomplete, one
+    that does not is turned away at the door with a 403.
+
+    The body has to be there. A POST to `/legacy/` with an empty body is
+    answered 405 before the credentials are looked at, which made an earlier
+    version of this check accept everything.
     """
-    request = urllib.request.Request(url, data=b"", method="POST")
-    credentials = base64.b64encode(f"__token__:{token}".encode()).decode()
-    request.add_header("Authorization", f"Basic {credentials}")
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            return int(response.status)
-    except urllib.error.HTTPError as error:
-        return int(error.code)
-    except (urllib.error.URLError, OSError):
+        response = requests.post(
+            url,
+            auth=("__token__", token),
+            data=UPLOAD_FORM,
+            timeout=timeout,
+        )
+    except requests.RequestException:
         return None
+    return response.status_code
 
 
 def verify_token(

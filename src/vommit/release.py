@@ -17,7 +17,15 @@ from contextlib import AbstractContextManager, nullcontext
 from pathlib import Path
 
 from .auth import Authenticate, publish_env, require_token
-from .bump import BumpRequest, BumpResult, Confirm, Notify, always, run_bump
+from .bump import (
+    BumpRequest,
+    BumpResult,
+    Confirm,
+    Notify,
+    always,
+    reject_flags,
+    run_bump,
+)
 from .config import CommandConfig, Config, GitConfig
 from .errors import VommitError
 from .git import GitRepo
@@ -29,6 +37,7 @@ PYPROJECT = "pyproject.toml"
 CLEAN = "clean"
 BUILD = "build"
 PUBLISH = "publish"
+POST_PUBLISH = "post_publish"
 
 #: Asks whether to publish the current version when no bump was warranted.
 ConfirmVersion = t.Callable[[str], bool]
@@ -63,22 +72,12 @@ class ReleaseRequest:
     def __post_init__(self) -> None:
         if not self.no_bump:
             return
-        conflicting = [
-            f"--{name}"
-            for name, given in (
-                ("major", self.bump.level == "major"),
-                ("minor", self.bump.level == "minor"),
-                ("patch", self.bump.level == "patch"),
-                ("prerelease", self.bump.prerelease),
-                ("version", bool(self.bump.version)),
-            )
-            if given
-        ]
-        if conflicting:
-            raise VommitError(
-                f"--no-bump publishes the version already in {PYPROJECT}; "
-                f"drop {' and '.join(conflicting)}."
-            )
+        # --allow-dirty stays allowed: the build still runs, and it may well
+        # have something to say about an unclean tree
+        reject_flags(
+            self.bump.targeting_flags(include_dirty=False),
+            f"--no-bump publishes the version already in {PYPROJECT}",
+        )
 
     @property
     def noop(self) -> bool:
@@ -195,7 +194,11 @@ def _plan(commands: CommandConfig | None, publishing: bool) -> tuple[Step, ...]:
 
     configured = [(CLEAN, commands.clean), (BUILD, commands.build)]
     if publishing:
-        configured.append((PUBLISH, commands.publish))
+        # post_publish only makes sense behind a publish that actually ran
+        configured += [
+            (PUBLISH, commands.publish),
+            (POST_PUBLISH, commands.post_publish),
+        ]
     return tuple(Step(name, command) for name, command in configured if command.strip())
 
 
@@ -214,8 +217,8 @@ def _execute(
     """
     Run the plan, with the push slotted in between building and publishing.
     """
-    before_push = tuple(step for step in steps if step.name != PUBLISH)
-    after_push = tuple(step for step in steps if step.name == PUBLISH)
+    after_push = tuple(step for step in steps if step.name in (PUBLISH, POST_PUBLISH))
+    before_push = tuple(step for step in steps if step not in after_push)
 
     for step in before_push:
         _run(runner, root, step, token, report_step, _undoable(version, bumped))
@@ -223,14 +226,14 @@ def _execute(
     pushed = _push(repo, git, version, bumped, notify)
 
     for step in after_push:
-        _run(runner, root, step, token, report_step, _released(version, pushed))
+        _run(runner, root, step, token, report_step, _aftermath(step, version, pushed))
 
     return ReleaseResult(
         version=version,
         bump=bumped,
         steps=steps,
         pushed=pushed,
-        published=bool(after_push),
+        published=any(step.name == PUBLISH for step in steps),
     )
 
 
@@ -258,6 +261,15 @@ def _push(
         repo.push_tag(git.origin, tag)
         notify(f"Pushed {tag} to {git.origin}.")
     return True
+
+
+def _aftermath(step: Step, version: str, pushed: bool) -> str:
+    """
+    What the state is once this step has failed, said plainly.
+    """
+    if step.name == POST_PUBLISH:
+        return f"{version} is published; only the follow-up command failed."
+    return _released(version, pushed)
 
 
 def _undoable(version: str, bumped: BumpResult | None) -> str:

@@ -220,6 +220,55 @@ def test_an_empty_publish_command_asks_for_no_token(sandbox):
     assert ledger(sandbox) == ["clean", "build"]
 
 
+def test_post_publish_runs_last(sandbox):
+    with_pipeline(sandbox, post_publish=f"echo tidy >> {LEDGER}")
+    with_pypi(sandbox)
+    sandbox.commits("feat: something releasable")
+
+    release(sandbox)
+
+    assert ledger(sandbox) == ["clean", "build", "publish", "tidy"]
+
+
+def test_post_publish_is_skipped_without_a_publish(sandbox):
+    # it is named after the step it follows; with nothing published there is
+    # nothing for it to follow
+    with_pipeline(sandbox, post_publish=f"echo tidy >> {LEDGER}")
+    sandbox.set_config("tool.vommit.pypi", enabled=False)
+    sandbox.commits("feat: something releasable")
+
+    release(sandbox)
+
+    assert ledger(sandbox) == ["clean", "build"]
+
+
+def test_post_publish_does_not_get_the_token(sandbox):
+    script = recorder(sandbox, "show-token.sh", f'echo "p[$UV_PUBLISH_TOKEN]" >> {LEDGER}')
+    with_pipeline(sandbox, post_publish=script)
+    with_pypi(sandbox)
+    sandbox.commits("feat: something releasable")
+
+    release(sandbox)
+
+    assert "p[]" in ledger(sandbox)
+
+
+def test_a_failing_post_publish_says_the_release_went_out(sandbox):
+    with_pipeline(sandbox, post_publish="exit 1")
+    with_pypi(sandbox)
+    sandbox.commits("feat: something releasable")
+
+    with pytest.raises(VommitError, match="is published; only the follow-up"):
+        release(sandbox)
+
+
+def test_no_bump_allows_allow_dirty():
+    # it does not choose a version, so it does not conflict with --no-bump
+    request = ReleaseRequest(bump=BumpRequest(allow_dirty=True), no_bump=True)
+
+    assert request.no_bump is True
+
+
 # --- pypi disabled, no commands ----------------------------------------------
 
 

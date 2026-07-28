@@ -36,19 +36,37 @@ vommit --help
 vommit release
 ```
 
-Bumps the version, runs the configured `clean` and `build` commands, pushes the release commit and
-its tag, and publishes last. That order is deliberate: a build that fails has pushed nothing, so
-`vommit bump --undo` can still take the release back, and PyPI never receives a version that the
-remote does not have. Use `--noop` to see the plan without running it, `--yes` to skip the
-confirmation, and the same `--major`/`--minor`/`--patch`/`--prerelease`/`--version` flags as `bump`.
+Bumps the version, runs `clean` and `build`, pushes the commit and its tag, then publishes.
 
-When no commit warrants a bump, vommit asks whether to publish the current version as it stands.
-`--no-bump` answers that up front, which is also how you retry after a publish that failed: the
-commit and tag are already in place, so only the upload is repeated.
+The order matters. A build that fails has pushed nothing, so `vommit bump --undo` still works.
+Publishing last means PyPI never gets a version the remote does not have, which cannot be
+repaired: PyPI does not allow reuploading a version.
 
-The three commands come from `[tool.vommit.commands]` and always run in that order. Leave one
-empty to skip it: a project with nothing to clean sets `clean = ""` rather than hunting for a
-command that does nothing.
+Flags are the same as `bump` (`--major`, `--minor`, `--patch`, `--prerelease`, `--version`,
+`--allow-dirty`, `--yes`), plus:
+
+| flag | |
+|---|---|
+| `--noop` | show the plan, run nothing |
+| `--no-bump` | publish the current version; also how you retry a failed upload |
+
+When nothing warrants a bump, vommit asks whether to publish the current version anyway.
+
+### Commands
+
+`[tool.vommit.commands]` holds four, run in order. Leave one empty to skip it.
+
+```toml
+[tool.vommit.commands]
+clean = "rm -rf ./dist"
+build = "uv build"
+publish = "uv publish"
+post_publish = ""          # runs after a successful publish
+```
+
+Values are read with environment-variable interpolation, so a `$VAR` here is expanded when the
+config loads, not by the shell that runs the command. Put anything needing shell expansion in a
+script and call that.
 
 ### PyPI credentials
 
@@ -56,25 +74,25 @@ command that does nothing.
 vommit authenticate
 ```
 
-Stores a PyPI token in your keyring under `vommit`/`pypi`, replacing any token already there. The
-token is checked before it is stored — it has to look like a PyPI token, and PyPI has to accept it
-— so a half-pasted clipboard is caught now rather than at the end of a release. An index that
-cannot be reached is not held against the token; `--no-verify` skips the check entirely, for an
-index that issues a different kind of token.
+Stores a token in your keyring under `vommit`/`pypi`, replacing any token already there. It is
+checked first: it has to look like a PyPI token, and PyPI has to accept it. An unreachable index
+is not held against the token. `--no-verify` skips both checks.
 
-`vommit ensure-authenticated` asks only when nothing is available yet, and works as a `pre` task.
+`vommit ensure-authenticated` asks only when there is no token yet, and works as a `pre` task.
 
-A release looks for the token in three places, in order: `UV_PUBLISH_TOKEN` in the environment,
-then the keyring, then you. It is passed to the publish command as `UV_PUBLISH_TOKEN` and to
-nothing else, so `clean` and `build` never see it.
+A release looks in three places, in order:
 
-Set `pypi.use_keyring = false` to be asked for the token on every release instead of storing it,
-or `pypi.enabled = false` to build without publishing. Either way, a token already in the
-environment is used as-is, which is what makes CI work without a keyring at all.
+1. `UV_PUBLISH_TOKEN` in the environment
+2. the keyring, when `pypi.use_keyring = true`
+3. you
 
-> Note: values in `[tool.vommit]` are read with environment-variable interpolation, so a `$VAR`
-> written in a command is expanded when the config loads rather than by the shell that runs it. Put
-> anything that needs the shell's own expansion in a script and call that.
+The token goes to `publish` and nowhere else, so `clean`, `build` and `post_publish` never see it.
+
+Set `pypi.use_keyring = false` to be asked every release instead of storing anything, or
+`pypi.enabled = false` to build without publishing.
+
+The default keyring backend needs a desktop session, so it fails over SSH. Install
+`vommit[ssh]` there, which adds an `ssh-agent` backed keyring.
 
 ## Migrating from python-semantic-release v7
 
