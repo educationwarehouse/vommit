@@ -128,6 +128,8 @@ def run_release(
         # the token is resolved, so a doomed release does not ask for one.
         _require_commits(git)
         _refuse_dirty_tree(repo, request.bump.allow_dirty)
+        if request.no_bump:
+            _refuse_a_stale_tag(repo, git, _current_version(project))
 
     # credentials are resolved before the first write, for the same reason bump
     # checks the tag before creating the commit: discovering afterwards that
@@ -153,6 +155,10 @@ def run_release(
         if bumped is None:
             # run_bump has already checked the branch and the remote by now
             version = _current_version(project)
+            if git:
+                # no new tag was made, so the one already there may be stale in
+                # exactly the way --no-bump can be
+                _refuse_a_stale_tag(repo, git, version)
             if not confirm_version(version):
                 return None
         elif bumped.cancelled:
@@ -225,6 +231,37 @@ def _refuse_dirty_tree(repo: GitRepo, allow_dirty: bool) -> None:
             "as it stands. Build output such as `dist/` belongs in "
             "`.gitignore`; left untracked it holds up the next release."
         )
+
+
+def _refuse_a_stale_tag(repo: GitRepo, git: GitConfig, version: str) -> None:
+    """
+    Refuse to publish under a tag that names a different commit.
+
+    Only reachable when this run did not make the tag itself: `--no-bump`, or a
+    bump that turned out to have nothing to do. The tag is then left over from
+    an earlier attempt, and `HEAD` has moved on since — so the build would go
+    out under a tag pointing at code it does not contain, which no amount of
+    later work can correct once the index has the file.
+
+    Moving the tag is the obvious repair and deliberately not done here: it
+    rewrites a ref other clones may already have. Say what is wrong and let
+    the decision be made in the open.
+    """
+    tag = git.format_tag(version)
+    if not tag:
+        return
+    tagged = repo.tag_commit(tag)
+    head = repo.head_commit()
+    if tagged is None or tagged == head:
+        return
+    raise VommitError(
+        f"Tag '{tag}' points at {tagged[:8]} ({repo.subject(tagged)}), but the "
+        f"release would be built from {head[:8]} ({repo.subject(head)}).\n"
+        f"Publishing now would put {version} on the index under a tag that "
+        "names different code.\n"
+        f"Move or delete '{tag}' if it is the tag that is wrong, or release a "
+        "new version if the code is meant to have moved on."
+    )
 
 
 def _current_version(project: UvProject) -> str:

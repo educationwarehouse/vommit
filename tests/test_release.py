@@ -556,6 +556,88 @@ def test_no_bump_checks_the_tree_too(sandbox):
         release(sandbox, no_bump=True)
 
 
+FLAG = "retry.flag"
+
+
+def ignore_build_output(sandbox: Sandbox) -> None:
+    sandbox.write(".gitignore", f"dist/\n{LEDGER}\n{FLAG}\n")
+    sandbox.commit("chore: ignore build output")
+
+
+def test_no_bump_refuses_a_tag_that_names_another_commit(sandbox):
+    # regression: the retry published the current tree under a tag left at the
+    # commit of the failed attempt, so the artifact could never be rebuilt
+    # from the tag that names it
+    ignore_build_output(sandbox)
+    with_pipeline(sandbox)
+    with_pypi(sandbox)
+    sandbox.commits("feat: something releasable")
+    release(sandbox)
+    sandbox.commits("fix: something after the release")
+
+    with pytest.raises(VommitError, match="names different code"):
+        release(sandbox, no_bump=True)
+
+
+def test_that_refusal_names_both_commits(sandbox):
+    ignore_build_output(sandbox)
+    with_pipeline(sandbox)
+    with_pypi(sandbox)
+    sandbox.commits("feat: something releasable")
+    release(sandbox)
+    sandbox.commits("fix: something after the release")
+
+    with pytest.raises(VommitError) as caught:
+        release(sandbox, no_bump=True)
+
+    message = str(caught.value)
+    # the tag sits on the release commit, whose subject is the version itself
+    assert "(0.2.0)" in message
+    assert "(fix: something after the release)" in message
+    assert sandbox.git("rev-parse", "HEAD").out[:8] in message
+    assert sandbox.git("rev-parse", "v0.2.0^{commit}").out[:8] in message
+
+
+def test_a_tag_still_on_head_retries_happily(sandbox):
+    # the ordinary resume: publish failed, nothing else has been committed.
+    # one command for both runs, since reconfiguring would itself commit
+    ignore_build_output(sandbox)
+    with_pipeline(sandbox, publish=f"test -f {FLAG} && echo publish >> {LEDGER}")
+    with_pypi(sandbox)
+    sandbox.commits("feat: something releasable")
+    with pytest.raises(VommitError, match="`publish` failed"):
+        release(sandbox)
+
+    (sandbox.work / FLAG).write_text("the index is back\n")
+
+    assert release(sandbox, no_bump=True).published is True
+    assert ledger(sandbox) == ["clean", "build", "clean", "build", "publish"]
+
+
+def test_no_bump_without_any_tag_is_still_fine(sandbox):
+    ignore_build_output(sandbox)
+    with_pipeline(sandbox)
+    with_pypi(sandbox)
+    sandbox.set_config("tool.vommit.git", tag_format="")
+    sandbox.commits("feat: something releasable")
+
+    assert release(sandbox, no_bump=True).published is True
+
+
+def test_nothing_to_bump_refuses_a_stale_tag_too(sandbox):
+    # same hazard by another route: no bump was warranted, so no new tag was
+    # made, and the one already there belongs to an older commit
+    ignore_build_output(sandbox)
+    with_pipeline(sandbox)
+    with_pypi(sandbox)
+    sandbox.commits("feat: something releasable")
+    release(sandbox)
+    sandbox.commits("chore: nothing worth releasing")
+
+    with pytest.raises(VommitError, match="names different code"):
+        release(sandbox, confirm_version=lambda _: True)
+
+
 def test_ignored_build_output_does_not_hold_up_a_retry(sandbox):
     # the headline --no-bump case: publish failed, dist/ is still lying there.
     # git does not report ignored files, so the retry goes straight through

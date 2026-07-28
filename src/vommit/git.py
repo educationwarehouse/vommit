@@ -188,10 +188,16 @@ class GitRepo:
             return []
         return split_commit_log(result.stdout)
 
-    def head_subject(self) -> str:
+    def subject(self, ref: str = "HEAD") -> str:
+        """
+        The first line of `ref`'s commit message, for naming it to a human.
+        """
         return self._checked(
-            "log", "-1", "--format=%s", action="read the last commit message"
+            "log", "-1", "--format=%s", ref, action=f"read the message of '{ref}'"
         ).out
+
+    def head_subject(self) -> str:
+        return self.subject()
 
     def tag_commit(self, tag: str) -> str | None:
         """
