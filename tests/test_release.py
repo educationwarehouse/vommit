@@ -556,6 +556,20 @@ def test_no_bump_checks_the_tree_too(sandbox):
         release(sandbox, no_bump=True)
 
 
+def test_ignored_build_output_does_not_hold_up_a_retry(sandbox):
+    # the headline --no-bump case: publish failed, dist/ is still lying there.
+    # git does not report ignored files, so the retry goes straight through
+    sandbox.write(".gitignore", f"dist/\n{LEDGER}\n")
+    sandbox.commit("chore: ignore build output")
+    with_pipeline(sandbox, build="mkdir -p dist && echo wheel > dist/pkg.whl")
+    with_pypi(sandbox)
+    sandbox.commits("feat: something releasable")
+    release(sandbox)
+
+    assert (sandbox.work / "dist/pkg.whl").exists()
+    assert release(sandbox, no_bump=True).published is True
+
+
 def test_a_dirty_tree_is_ignored_when_git_is_off(sandbox):
     # nothing is pushed, so there is no remote for the artifact to disagree with
     with_pipeline(sandbox)

@@ -222,7 +222,8 @@ def _refuse_dirty_tree(repo: GitRepo, allow_dirty: bool) -> None:
             "The working tree has changes that the release commit would not "
             f"contain, but the build would pick up:\n{listed}\n"
             "Commit or stash them, or pass --allow-dirty to publish the tree "
-            "as it stands."
+            "as it stands. Build output such as `dist/` belongs in "
+            "`.gitignore`; left untracked it holds up the next release."
         )
 
 
