@@ -322,7 +322,10 @@ def _plan(commands: CommandConfig | None, publishing: bool) -> tuple[Step, ...]:
 
     configured = [(CLEAN, commands.clean), (BUILD, commands.build)]
     if publishing:
-        # post_publish only makes sense behind a publish that actually ran
+        # both belong to the publishing half of the pipeline, and both are
+        # kept even when `publish` itself is empty: emptying it while setting
+        # `post_publish` is how someone says "build and tag here, upload my
+        # own way", and dropping the one step they configured would surprise
         configured += [
             (PUBLISH, commands.publish),
             (POST_PUBLISH, commands.post_publish),
