@@ -720,6 +720,12 @@ def release(
                 yes=yes,
                 default=False,
             ),
+            # deliberately not routed through `_asker`: `config.confirm` turns
+            # off the routine "shall I release?" question, and must not also
+            # silence a warning that something is actually out of step
+            confirm_stale=lambda stale: _confirm(
+                stale.question, yes=yes, default=False
+            ),
             authenticate=lambda: _token(config),
             report_step=_step,
         )

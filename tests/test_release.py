@@ -58,6 +58,7 @@ def release(
     notify=None,
     confirm=None,
     confirm_version=None,
+    confirm_stale=None,
     authenticate=None,
     **bump_kwargs,
 ):
@@ -71,6 +72,7 @@ def release(
         authenticate=authenticate or (lambda: TOKEN),
         **({"confirm": confirm} if confirm else {}),
         **({"confirm_version": confirm_version} if confirm_version else {}),
+        **({"confirm_stale": confirm_stale} if confirm_stale else {}),
     )
 
 
@@ -564,10 +566,10 @@ def ignore_build_output(sandbox: Sandbox) -> None:
     sandbox.commit("chore: ignore build output")
 
 
-def test_no_bump_refuses_a_tag_that_names_another_commit(sandbox):
-    # regression: the retry published the current tree under a tag left at the
-    # commit of the failed attempt, so the artifact could never be rebuilt
-    # from the tag that names it
+def stale_tag_setup(sandbox: Sandbox) -> None:
+    """
+    A released version, then a commit on top: the fix-and-retry situation.
+    """
     ignore_build_output(sandbox)
     with_pipeline(sandbox)
     with_pypi(sandbox)
@@ -575,27 +577,95 @@ def test_no_bump_refuses_a_tag_that_names_another_commit(sandbox):
     release(sandbox)
     sandbox.commits("fix: something after the release")
 
-    with pytest.raises(VommitError, match="names different code"):
-        release(sandbox, no_bump=True)
+
+def test_no_bump_asks_before_publishing_under_a_stale_tag(sandbox):
+    # the retry publishes the current tree under a tag left at the commit of
+    # the earlier attempt; worth a warning, not a refusal, because fixing
+    # something and retrying without re-bumping is what --no-bump is for
+    stale_tag_setup(sandbox)
+    asked: list[str] = []
+
+    result = release(
+        sandbox,
+        no_bump=True,
+        confirm_stale=lambda stale: bool(asked.append(stale.question)) or True,
+    )
+
+    assert len(asked) == 1
+    assert result.published is True
 
 
-def test_that_refusal_names_both_commits(sandbox):
-    ignore_build_output(sandbox)
-    with_pipeline(sandbox)
-    with_pypi(sandbox)
-    sandbox.commits("feat: something releasable")
-    release(sandbox)
-    sandbox.commits("fix: something after the release")
+def test_declining_that_warning_cancels_the_release(sandbox):
+    stale_tag_setup(sandbox)
+    before = ledger(sandbox)
 
-    with pytest.raises(VommitError) as caught:
-        release(sandbox, no_bump=True)
+    result = release(sandbox, no_bump=True, confirm_stale=lambda _: False)
 
-    message = str(caught.value)
+    assert result.cancelled is True
+    assert result.published is False
+    assert ledger(sandbox) == before, "not one step of the retry should have run"
+
+
+def test_the_warning_names_both_commits(sandbox):
+    stale_tag_setup(sandbox)
+    asked: list[str] = []
+
+    release(
+        sandbox,
+        no_bump=True,
+        confirm_stale=lambda stale: bool(asked.append(stale.question)) or True,
+    )
+
+    question = asked[0]
     # the tag sits on the release commit, whose subject is the version itself
-    assert "(0.2.0)" in message
-    assert "(fix: something after the release)" in message
-    assert sandbox.git("rev-parse", "HEAD").out[:8] in message
-    assert sandbox.git("rev-parse", "v0.2.0^{commit}").out[:8] in message
+    assert "(0.2.0)" in question
+    assert "(fix: something after the release)" in question
+    assert sandbox.git("rev-parse", "HEAD").out[:8] in question
+    assert sandbox.git("rev-parse", "v0.2.0^{commit}").out[:8] in question
+    assert "Publish 0.2.0 anyway" in question
+
+
+def test_noop_warns_about_a_stale_tag_without_asking(sandbox):
+    stale_tag_setup(sandbox)
+    said: list[str] = []
+
+    def refuse(_):  # pragma: no cover
+        raise AssertionError("a dry run has nothing to confirm")
+
+    result = release(
+        sandbox, no_bump=True, noop=True, notify=said.append, confirm_stale=refuse
+    )
+
+    assert result.noop is True
+    assert result.cancelled is False
+    assert any("names different code" in line for line in said)
+
+
+def test_no_warning_when_nothing_is_published(sandbox):
+    # with no upload there is no artifact to disagree with the tag, and
+    # pushing a tag the remote already has changes nothing
+    ignore_build_output(sandbox)
+    with_pipeline(sandbox)
+    with_pypi(sandbox)
+    sandbox.commits("feat: something releasable")
+    release(sandbox)
+    sandbox.set_config("tool.vommit.pypi", enabled=False)
+
+    def refuse(_):  # pragma: no cover
+        raise AssertionError("nothing is published, so nothing is out of step")
+
+    assert release(sandbox, no_bump=True, confirm_stale=refuse).published is False
+
+
+def test_a_fresh_release_clears_the_warning(sandbox):
+    # once a real bump tags HEAD again, tag and code agree and nobody is asked
+    stale_tag_setup(sandbox)
+    sandbox.commits("feat: worth its own version")
+
+    def refuse(_):  # pragma: no cover
+        raise AssertionError("a bump makes its own tag; it cannot be stale")
+
+    assert release(sandbox, confirm_stale=refuse).version == "0.3.0"
 
 
 def test_a_tag_still_on_head_retries_happily(sandbox):
@@ -624,9 +694,9 @@ def test_no_bump_without_any_tag_is_still_fine(sandbox):
     assert release(sandbox, no_bump=True).published is True
 
 
-def test_nothing_to_bump_refuses_a_stale_tag_too(sandbox):
-    # same hazard by another route: no bump was warranted, so no new tag was
-    # made, and the one already there belongs to an older commit
+def test_nothing_to_bump_warns_about_a_stale_tag_too(sandbox):
+    # same situation by another route: no bump was warranted, so no new tag
+    # was made, and the one already there belongs to an older commit
     ignore_build_output(sandbox)
     with_pipeline(sandbox)
     with_pypi(sandbox)
@@ -634,8 +704,11 @@ def test_nothing_to_bump_refuses_a_stale_tag_too(sandbox):
     release(sandbox)
     sandbox.commits("chore: nothing worth releasing")
 
-    with pytest.raises(VommitError, match="names different code"):
-        release(sandbox, confirm_version=lambda _: True)
+    result = release(
+        sandbox, confirm_version=lambda _: True, confirm_stale=lambda _: False
+    )
+
+    assert result.cancelled is True
 
 
 def test_ignored_build_output_does_not_hold_up_a_retry(sandbox):
