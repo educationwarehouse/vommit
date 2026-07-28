@@ -122,6 +122,13 @@ def run_release(
     pypi = config.active_pypi
     steps = _plan(commands, bool(pypi))
 
+    if git:
+        # both of these ask the same question: will the artifact that goes to
+        # the index match the commit that goes to the remote? they run before
+        # the token is resolved, so a doomed release does not ask for one.
+        _require_commits(git)
+        _refuse_dirty_tree(repo, request.bump.allow_dirty)
+
     # credentials are resolved before the first write, for the same reason bump
     # checks the tag before creating the commit: discovering afterwards that
     # there is no token would leave a pushed release with nothing on PyPI.
@@ -174,6 +181,49 @@ def run_release(
         notify=notify,
         report_step=report_step,
     )
+
+
+def _require_commits(git: GitConfig) -> None:
+    """
+    Refuse a git release that would never record the version it publishes.
+
+    `commit_format = ""` switches the release commit off, which `bump` allows:
+    everything it does stays on this machine and `--undo` can take it back.
+    Publishing changes that. The bump would be written and staged but never
+    committed, so the push sends an unchanged branch, any tag lands on the
+    commit *before* the bump, and the index ends up with a version that no
+    commit anywhere contains.
+    """
+    if git.commit_format:
+        return
+    raise VommitError(
+        "Releasing with git enabled needs a release commit, but "
+        "`git.commit_format` is empty, so the bump would never be committed "
+        "and the version would reach the index without reaching the remote.\n"
+        "Set `git.commit_format`, or set `git.enabled = false` to release "
+        "without touching git at all."
+    )
+
+
+def _refuse_dirty_tree(repo: GitRepo, allow_dirty: bool) -> None:
+    """
+    Refuse to build a tree that holds more than the release commit will.
+
+    `bump` only checks the handful of files it writes, which is enough when
+    nothing leaves the machine. A release builds the whole working tree and
+    pushes only `HEAD`, so anything uncommitted is baked into the artifact and
+    missing from the remote; PyPI does not allow a reupload to correct it.
+    """
+    if allow_dirty:
+        return
+    if dirty := repo.uncommitted():
+        listed = "\n".join(f"  {path}" for path in dirty)
+        raise VommitError(
+            "The working tree has changes that the release commit would not "
+            f"contain, but the build would pick up:\n{listed}\n"
+            "Commit or stash them, or pass --allow-dirty to publish the tree "
+            "as it stands."
+        )
 
 
 def _current_version(project: UvProject) -> str:

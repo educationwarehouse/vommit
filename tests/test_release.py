@@ -488,6 +488,131 @@ def test_no_bump_needs_a_version_to_publish(sandbox):
         release(sandbox, no_bump=True)
 
 
+# --- the artifact has to match the commit -------------------------------------
+#
+# Two ways the tree that gets built can differ from the history that gets
+# pushed. Both end with the index holding a version that no commit contains,
+# and PyPI refusing the reupload that would put it right.
+
+
+def test_a_modified_source_file_stops_the_release(sandbox):
+    # `bump` only checks the files it writes, so this used to build and publish
+    # a change that the release commit never contained
+    with_pipeline(sandbox)
+    with_pypi(sandbox)
+    sandbox.commits("feat: something releasable")
+    (sandbox.work / "src/sandbox/__init__.py").write_text("SECRET = 1\n")
+
+    with pytest.raises(VommitError, match="src/sandbox/__init__.py"):
+        release(sandbox)
+
+    assert ledger(sandbox) == [], "nothing should have been built"
+
+
+def test_an_untracked_source_file_stops_the_release(sandbox):
+    # untracked counts too: the build picks it up, the commit does not
+    with_pipeline(sandbox)
+    with_pypi(sandbox)
+    sandbox.commits("feat: something releasable")
+    (sandbox.work / "src/sandbox/extra.py").write_text("x = 1\n")
+
+    with pytest.raises(VommitError, match="src/sandbox/extra.py"):
+        release(sandbox)
+
+
+def test_a_dirty_tree_stops_the_release_before_the_token_is_asked_for(sandbox):
+    with_pipeline(sandbox)
+    with_pypi(sandbox)
+    sandbox.commits("feat: something releasable")
+    (sandbox.work / "src/sandbox/__init__.py").write_text("SECRET = 1\n")
+
+    def refuse():  # pragma: no cover
+        raise AssertionError("a doomed release should not ask for a credential")
+
+    with pytest.raises(VommitError, match="Commit or stash"):
+        release(sandbox, authenticate=refuse)
+
+
+def test_allow_dirty_publishes_the_tree_as_it_stands(sandbox):
+    with_pipeline(sandbox)
+    with_pypi(sandbox)
+    sandbox.commits("feat: something releasable")
+    (sandbox.work / "src/sandbox/__init__.py").write_text("SECRET = 1\n")
+
+    result = release(sandbox, allow_dirty=True)
+
+    assert result.published is True
+    assert ledger(sandbox) == ["clean", "build", "publish"]
+
+
+def test_no_bump_checks_the_tree_too(sandbox):
+    # the retry path never calls `run_bump`, so it used to skip every check
+    with_pipeline(sandbox)
+    with_pypi(sandbox)
+    sandbox.commits("feat: something releasable")
+    (sandbox.work / "src/sandbox/__init__.py").write_text("SECRET = 1\n")
+
+    with pytest.raises(VommitError, match="src/sandbox/__init__.py"):
+        release(sandbox, no_bump=True)
+
+
+def test_a_dirty_tree_is_ignored_when_git_is_off(sandbox):
+    # nothing is pushed, so there is no remote for the artifact to disagree with
+    with_pipeline(sandbox)
+    with_pypi(sandbox)
+    sandbox.set_config("tool.vommit.git", enabled=False)
+    sandbox.commits("feat: something releasable")
+    (sandbox.work / "src/sandbox/__init__.py").write_text("SECRET = 1\n")
+
+    assert release(sandbox).published is True
+
+
+def test_a_release_without_a_commit_format_is_refused(sandbox):
+    # regression: `commit_format = ""` means run_bump writes and stages the
+    # bump but never commits it, then tags the commit *before* the bump. the
+    # push sent an unchanged branch and a tag on the wrong commit, and publish
+    # uploaded a version that no commit anywhere contained
+    with_pipeline(sandbox)
+    with_pypi(sandbox)
+    sandbox.set_config("tool.vommit.git", commit_format="")
+    sandbox.commits("feat: something releasable")
+
+    with pytest.raises(VommitError, match="`git.commit_format` is empty"):
+        release(sandbox)
+
+    assert ledger(sandbox) == [], "nothing should have been built"
+    assert remote_tags(sandbox) == [], "no tag should have reached the remote"
+    assert sandbox.tags() == [], "and none should have been created locally"
+
+
+def test_that_refusal_names_both_ways_out(sandbox):
+    with_pipeline(sandbox)
+    sandbox.set_config("tool.vommit.git", commit_format="")
+
+    with pytest.raises(VommitError, match="git.enabled = false"):
+        release(sandbox)
+
+
+def test_no_bump_is_refused_without_a_commit_format_too(sandbox):
+    # the original release was never committed either, so retrying it cannot
+    # put the version onto the remote
+    with_pipeline(sandbox)
+    with_pypi(sandbox)
+    sandbox.set_config("tool.vommit.git", commit_format="")
+
+    with pytest.raises(VommitError, match="`git.commit_format` is empty"):
+        release(sandbox, no_bump=True)
+
+
+def test_an_empty_commit_format_is_fine_without_git(sandbox):
+    with_pipeline(sandbox)
+    with_pypi(sandbox)
+    sandbox.set_config("tool.vommit.git", enabled=False, commit_format="")
+    sandbox.commits("feat: something releasable")
+
+    assert release(sandbox).published is True
+
+
 # --- failures ----------------------------------------------------------------
 
 

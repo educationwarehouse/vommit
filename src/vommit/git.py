@@ -243,15 +243,29 @@ class GitRepo:
         result = self._git("show", f"{ref}:{path}")
         return result.stdout if result.ok else None
 
+    def _changed(self) -> set[str]:
+        result = self._checked(
+            "status", "--porcelain", action="inspect the working tree"
+        )
+        return {line[3:].strip() for line in result.stdout.splitlines() if line}
+
     def dirty_paths(self, paths: t.Iterable[str]) -> list[str]:
         """
         Which of `paths` already have uncommitted changes.
         """
-        result = self._checked(
-            "status", "--porcelain", action="inspect the working tree"
-        )
-        changed = {line[3:].strip() for line in result.stdout.splitlines() if line}
+        changed = self._changed()
         return sorted(path for path in paths if path in changed)
+
+    def uncommitted(self) -> list[str]:
+        """
+        Every path the working tree has changed, whether tracked or not.
+
+        Wider than `dirty_paths` on purpose: a release builds the tree it is
+        standing in, so an untracked source file ends up in the artifact just
+        as surely as a modified one does. Ignored files stay out, since git
+        does not report them and a build would not pick them up either.
+        """
+        return sorted(self._changed())
 
     def add(self, paths: t.Iterable[str]) -> None:
         targets = list(paths)
