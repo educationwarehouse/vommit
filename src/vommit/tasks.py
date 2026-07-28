@@ -3,7 +3,6 @@
 # Entrypoints only: argument plumbing, output and error translation.
 # Anything with logic in it belongs in a module that can be tested without a Context.
 
-import shlex
 import sys
 import typing as t
 from contextlib import contextmanager
@@ -15,6 +14,7 @@ from ewok import Context, task
 from invoke import Exit
 from rich.markup import escape
 
+from . import licenses
 from .auth import (
     ENVIRONMENT,
     KEYRING,
@@ -45,7 +45,17 @@ from .migrate import (
     strip_psr,
     translate,
 )
+from .interactive import Prompts
 from .release import ReleaseRequest, ReleaseResult, Step, run_release
+from .scaffold import (
+    DEFAULT_BRANCH,
+    DEFAULT_COMMIT_MESSAGE,
+    Defaults,
+    ScaffoldRequest,
+    ScaffoldResult,
+    plan_request,
+    run_scaffold,
+)
 from .shell import ContextRunner
 from .undo import UndoPlan, UndoResult, run_undo
 
@@ -211,10 +221,104 @@ def _asker[ResultT](
     return ask
 
 
-@task()
-def init(c: Context, project_name: str, non_interactive: bool = False):
-    c.run(f"uv init --package {shlex.quote(project_name)}")
-    return setup(c, non_interactive=non_interactive, project_dir=project_name)
+@task(
+    # long flags only: a dozen parameters here left invoke deriving short flags
+    # like `-y` for `--python`, and one collision produced a bare `--`
+    auto_shortflags=False,
+    help={
+        "project-name": "Directory and package name to create.",
+        "non-interactive": "Take every answer from the flags and defaults.",
+        "python": "Minimum Python version (default: the interpreter running vommit).",
+        "description": "Project description; omitted from pyproject.toml when empty.",
+        "license": f"SPDX identifier, or '{licenses.NO_LICENSE}' (default: MIT).",
+        "branch": "Release branch (default: the one git creates).",
+        "remote": "URL to add as 'origin'.",
+        "message": "Initial commit message; empty makes no commit.",
+        "push": "Push the initial commit and set the upstream.",
+        "no-sync": "Skip `uv sync`, leaving no .venv or uv.lock.",
+        "pin-python": "Keep uv's .python-version file.",
+        "no-workspace": "Do not join an enclosing uv workspace.",
+    },
+)
+def init(
+    c: Context,
+    project_name: str,
+    non_interactive: bool = False,
+    python: str | None = None,
+    description: str | None = None,
+    license: str | None = None,
+    branch: str | None = None,
+    remote: str | None = None,
+    message: str | None = None,
+    push: bool = False,
+    no_sync: bool = False,
+    pin_python: bool = False,
+    no_workspace: bool = False,
+) -> None:
+    """
+    Create a new uv package, configure vommit in it, and make its first commit.
+
+    Asks for the Python floor, description, license, release branch, remote and
+    commit message; every flag here pre-fills its question, and
+    `--non-interactive` takes the answers as given.
+    """
+    runner = ContextRunner(c)
+    with _reported():
+        defaults = ScaffoldRequest(
+            project_name=project_name,
+            python=python,
+            description=description,
+            license_id=license or licenses.DEFAULT_LICENSE,
+            branch=branch or DEFAULT_BRANCH,
+            pin_python=pin_python,
+            workspace=not no_workspace,
+            remote=remote,
+            commit_message=message or DEFAULT_COMMIT_MESSAGE,
+            push=push,
+            sync=not no_sync,
+        )
+        asker = Defaults() if non_interactive else Prompts()
+        cwd = Path.cwd()
+        request = plan_request(
+            defaults,
+            asker,
+            detected_branch=branch or _detected_branch(runner, cwd),
+        )
+        result = run_scaffold(
+            request,
+            runner=runner,
+            cwd=cwd,
+            configure=lambda root: _configure_new(c, root, non_interactive),
+            notify=_notify,
+        )
+        _report_scaffold(result)
+
+
+def _detected_branch(runner: ContextRunner, cwd: Path) -> str:
+    """
+    The branch name a `git init` here would produce, for the prompt's default.
+    """
+    return GitRepo(runner=runner, root=cwd).main_branch_local() or DEFAULT_BRANCH
+
+
+def _configure_new(c: Context, root: Path, non_interactive: bool) -> None:
+    """
+    Write the vommit config into the project `init` just created.
+    """
+    setup(c, non_interactive=non_interactive, project_dir=str(root))
+
+
+def _report_scaffold(result: ScaffoldResult) -> None:
+    rich.print(f"[green]Created[/green] {escape(str(result.root))}")
+    rich.print(f"  [dim]branch[/dim]  {escape(result.branch)}")
+    if result.license_id:
+        rich.print(f"  [dim]license[/dim] {escape(result.license_id)}")
+    if result.remote:
+        rich.print(f"  [dim]remote[/dim]  {escape(result.remote)}")
+    if not result.committed:
+        rich.print("[yellow]No initial commit was made.[/yellow]")
+    if result.remote and not result.pushed:
+        rich.print("[blue]Nothing was pushed yet.[/blue]")
 
 
 @task()
@@ -225,13 +329,11 @@ def setup(
     mode: SetupMode = "missing",
 ) -> None:
     """
-    Init (default: interacitve ; allow --non-interactive with smart defaults):
-    - check for vommit config in pyproject.toml
-    - else: check for semantic-release < 8 config ; ask if user wants to migrate (tool.semantic_release; project.optional-dependencies.dev)
-    - else: interactively ask to setup (tool.vommit ; project.optional-dependencies.dev)
-    + ask if user wants to switch __about__ to `__version__ = version(__package__)`
-    + Extra option for initializing totally new project?
-    - uv init --package <name>
+    Create or complete the vommit config in this project's pyproject.toml.
+
+    Hands over to `migrate` when it finds a python-semantic-release v7 config
+    and nothing of vommit's own. `--mode=all` revisits every setting rather than
+    only the missing ones.
     """
     root = _project_root(project_dir)
     pyproject = root / "pyproject.toml"
@@ -476,7 +578,7 @@ def _pin_branch(c: Context, config: Config, root: Path) -> None:
     if not (git := config.active_git) or git.branch != DERIVE_BRANCH:
         return
     repo = GitRepo(runner=ContextRunner(c), root=root)
-    if branch := repo.main_branch(git.origin):
+    if branch := repo.detect_release_branch(git.origin):
         git.branch = branch
 
 
@@ -738,7 +840,3 @@ def release(
     if result.cancelled:
         raise Exit(code=1)
     return result.version
-
-
-# todo: 'init' to make a whole new project? = uv init + setup
-# todo: `vommit add` to add a dependency?

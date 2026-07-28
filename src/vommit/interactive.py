@@ -393,6 +393,36 @@ class InteractiveConfig(TypedConfig):
         return _interactive_key_paths(cls)
 
 
+class Prompts:
+    """
+    The `scaffold.Asker` protocol, asked on a real terminal.
+
+    A cancelled prompt (ctrl-c) answers None, which becomes the default here
+    rather than an empty project name three questions later.
+    """
+
+    def text(self, question: str, default: str = "") -> str:
+        answer = questionary.text(
+            f"{question}:", default=default, style=_PROMPT_STYLE
+        ).ask()
+        return default if answer is None else str(answer)
+
+    def confirm(self, question: str, default: bool = True) -> bool:
+        answer = questionary.confirm(
+            question, default=default, style=_PROMPT_STYLE
+        ).ask()
+        return default if answer is None else bool(answer)
+
+    def choose(self, question: str, options: list[str], default: str) -> str:
+        answer = questionary.select(
+            f"{question}:",
+            choices=options,
+            default=default if default in options else None,
+            style=_PROMPT_STYLE,
+        ).ask()
+        return default if answer is None else str(answer)
+
+
 # class Example(TypedConfig, Interactive):
 #     name: str
 #     age: t.Annotated[int, "How old are you?"] = 18

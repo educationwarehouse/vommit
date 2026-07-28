@@ -37,6 +37,54 @@ To see all commands and options:
 vommit --help
 ```
 
+## Starting a new project
+
+```bash
+vommit init --project-name mypkg
+```
+
+Runs `uv init --package`, configures Vommit in the result, and leaves a project
+that is ready to release: one commit holding the whole scaffold, on a named
+branch, with a license and a changelog.
+
+It asks for the minimum Python version, a description, a license, the release
+branch, a Git remote and the first commit message. Every flag pre-fills its
+question, so `--non-interactive` takes the answers as given:
+
+```bash
+vommit init --project-name mypkg --non-interactive \
+    --python 3.13 --license MIT --branch main \
+    --remote git@example.com:me/mypkg.git --push
+```
+
+| Flag | Meaning |
+|---|---|
+| `--python VERSION` | Minimum Python version; defaults to the interpreter running Vommit |
+| `--description TEXT` | Left out of `pyproject.toml` entirely when empty, rather than carrying uv's placeholder to PyPI |
+| `--license SPDX` | Writes `LICENSE`, `[project].license` and `license-files`; `none` writes neither |
+| `--branch NAME` | Release branch; renames the one Git created when they differ |
+| `--remote URL` | Added as `origin` before the config is written, so the release branch is read from it rather than guessed |
+| `--message TEXT` | Initial commit message; empty makes no commit |
+| `--push` | Push that commit and record the upstream |
+| `--no-sync` | Skip `uv sync`, leaving no `.venv` or `uv.lock` |
+| `--pin-python` | Keep uv's `.python-version`, which Vommit otherwise leaves out |
+| `--no-workspace` | Do not join an enclosing uv workspace |
+
+`.python-version` is skipped by default: uv pins whichever interpreter it finds
+on `PATH`, and a file naming the wrong one quietly holds `uv run` back.
+`--python` sets `requires-python` instead, which is the constraint that belongs
+in the package.
+
+Licenses Vommit carries the text for are MIT, ISC, BSD-2-Clause and
+BSD-3-Clause. Any other SPDX identifier is still recorded in
+`[project].license`, but writing the text is left to you: `license-files` would
+otherwise point at a file that is not there.
+
+Run inside an existing repository, `uv init` creates no repository of its own.
+Vommit then leaves that history, branch and remote alone, makes no commit, and
+writes the `.gitignore` uv skipped — without it a release would commit its own
+`dist/`.
+
 ## Releasing
 
 ```bash
@@ -151,8 +199,12 @@ are included when the next stable release is made. Set
 
 Run `vommit setup` to create or complete `[tool.vommit]` interactively; use
 `vommit setup --mode=all` to revisit every setting, or
-`vommit setup --non-interactive` for defaults. `vommit init --project-name NAME`
-creates and configures a new uv package.
+`vommit setup --non-interactive` for defaults. For a project that does not exist
+yet, `vommit init` runs `uv init` first.
+
+When `git.branch` is left at `<head>`, `setup` pins a concrete name: the remote's
+default branch when there is a remote, otherwise the branch that is checked out.
+Only with neither does it fall back to `init.defaultBranch`.
 
 The most useful settings to revisit are:
 
