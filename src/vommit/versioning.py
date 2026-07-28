@@ -167,8 +167,8 @@ class UvProject:
         """
         return self._version(args, dry_run=True)
 
-    def apply(self, args: list[str]) -> str:
-        return self._version(args, dry_run=False)
+    def apply(self, args: list[str], frozen: bool = False) -> str:
+        return self._version(args, dry_run=False, frozen=frozen)
 
     def preview_bump(
         self,
@@ -186,8 +186,9 @@ class UvProject:
         level: VersionBump,
         prerelease: bool = False,
         token: PrereleaseToken = DEFAULT_PRERELEASE_TOKEN,
+        frozen: bool = False,
     ) -> str:
-        return self.apply(self._bump_args(level, prerelease, token))
+        return self.apply(self._bump_args(level, prerelease, token), frozen=frozen)
 
     def apply_set(self, version: str) -> str:
         return self.apply([version])
@@ -203,11 +204,16 @@ class UvProject:
             args += ["--bump", token]
         return args
 
-    def _version(self, args: list[str], dry_run: bool) -> str:
-        # --frozen keeps a preview from writing a lockfile at all; a real bump
-        # re-locks (the new version lands in uv.lock, which we commit) but has
-        # no reason to rebuild the virtualenv.
-        extra = ["--dry-run", "--frozen"] if dry_run else ["--no-sync"]
+    def _version(self, args: list[str], dry_run: bool, frozen: bool = False) -> str:
+        # --frozen keeps a preview from writing a lockfile at all. A real bump
+        # re-locks by default, but projects that ignore their lockfile should
+        # not get one merely from changing their version.
+        if dry_run:
+            extra = ["--dry-run", "--frozen"]
+        elif frozen:
+            extra = ["--frozen"]
+        else:
+            extra = ["--no-sync"]
         command = shlex.join(
             [
                 "uv",

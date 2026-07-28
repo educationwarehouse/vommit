@@ -273,6 +273,23 @@ class GitRepo:
         """
         return sorted(self._changed())
 
+    def ignores(self, path: str) -> bool:
+        """
+        Whether Git ignores an otherwise untracked path.
+
+        `check-ignore` exits with one when a path is not ignored, so that is a
+        normal answer rather than a failed Git operation.
+        """
+        result = self._git("check-ignore", "--quiet", "--", path)
+        if result.returncode == 0:
+            return True
+        elif result.returncode == 1:
+            return False
+        else:  # pragma: no cover - Git reserves these codes for fatal errors
+            raise VommitError(
+                f"Could not check whether {path} is ignored: {result.error}"
+            )
+
     def add(self, paths: t.Iterable[str]) -> None:
         targets = list(paths)
         if targets:

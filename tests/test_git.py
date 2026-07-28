@@ -235,6 +235,12 @@ def test_add_with_nothing_to_stage_is_a_no_op(sandbox):
     assert runner.calls == []
 
 
+def test_ignores_an_untracked_ignored_path(sandbox):
+    sandbox.write(".gitignore", "uv.lock\n")
+
+    assert repo_of(sandbox).ignores("uv.lock") is True
+
+
 def test_commit_failure_is_reported(sandbox):
     # regression: an unchecked commit used to be followed by a tag anyway,
     # leaving the tag on the previous commit.

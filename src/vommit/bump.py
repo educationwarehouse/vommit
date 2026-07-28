@@ -230,7 +230,8 @@ def run_bump(
     if not confirm(result):
         return dc.replace(result, noop=True, cancelled=True)
 
-    applied = project.apply(plan)
+    lockfile_ignored = bool(git and repo.ignores(LOCKFILE))
+    applied = project.apply(plan, frozen=lockfile_ignored)
     if applied != next_version:
         raise VommitError(
             f"`uv version` produced {applied}, but {next_version} was planned; "
@@ -241,9 +242,15 @@ def run_bump(
         update.apply()
 
     if git:
-        if project.lockfile.exists():
+        if project.lockfile.exists() and not lockfile_ignored:
             touched.append(LOCKFILE)
-        repo.add(touched)
+        try:
+            repo.add(touched)
+        except VommitError as error:
+            raise VommitError(
+                f"{error}\nNothing has been pushed, so `vommit bump --undo` can still "
+                f"take {next_version} back."
+            ) from error
         if commit_message:
             _commit(repo, commit_message, next_version)
         if tag:

@@ -99,6 +99,17 @@ def test_bump_commits_the_lockfile_too(sandbox):
     assert sorted(tracked) == ["CHANGELOG.md", "pyproject.toml", "uv.lock"]
 
 
+def test_bump_does_not_create_an_ignored_lockfile(sandbox):
+    sandbox.write(".gitignore", "uv.lock\n")
+    sandbox.commit("chore: ignore the lockfile")
+    sandbox.commits("fix: correct a bug")
+
+    bump(sandbox)
+
+    assert not (sandbox.work / "uv.lock").exists()
+    assert sandbox.status() == []
+
+
 def test_second_bump_stacks_a_new_entry_on_top(sandbox):
     sandbox.commits("fix: correct a bug")
     bump(sandbox)

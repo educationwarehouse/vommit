@@ -75,6 +75,9 @@ def test_preview_does_not_pass_no_sync(sandbox):
     uv.apply_bump("minor")
     assert runner.ran("--no-sync")
 
+    uv.apply_bump("minor", frozen=True)
+    assert runner.ran("--no-sync --frozen")
+
 
 @pytest.mark.parametrize(
     "version, expected",
