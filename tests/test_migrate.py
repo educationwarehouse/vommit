@@ -8,6 +8,7 @@ from src.vommit.commits import BREAKING
 from src.vommit.config import DERIVE_BRANCH, Config
 from src.vommit.errors import VommitError
 from src.vommit.migrate import (
+    discover_version_files,
     METADATA_IMPORT,
     MigrationReport,
     Note,
@@ -1181,3 +1182,148 @@ def test_stripping_leaves_an_already_empty_array_as_it_was(tmp_path):
 
     assert strip_psr(pyproject) == ["[tool.semantic_release]"]
     assert "dependencies = [\n]" in pyproject.read_text()
+
+
+# --- discovering version files without a v7 config ---------------------------
+
+
+def package(tmp_path: Path, name: str = "mypkg", layout: str = "src") -> Path:
+    """
+    A project whose import package sits where the convention puts it.
+    """
+    write(tmp_path, f'[project]\nname = "{name}"\nversion = "1.2.3"\n')
+    directory = tmp_path / "src" / name if layout == "src" else tmp_path / name
+    directory.mkdir(parents=True)
+    (directory / "__init__.py").write_text("")
+    return directory
+
+
+def test_discover_version_files_finds_a_literal_in_about(tmp_path):
+    package(tmp_path)
+    (tmp_path / "src/mypkg/__about__.py").write_text('__version__ = "1.2.3"\n')
+
+    assert discover_version_files(tmp_path) == [
+        VersionFile(path="src/mypkg/__about__.py", variable="__version__")
+    ]
+
+
+def test_discover_version_files_handles_a_flat_layout(tmp_path):
+    package(tmp_path, layout="flat")
+    (tmp_path / "mypkg/__init__.py").write_text('__version__ = "1.2.3"\n')
+
+    assert discover_version_files(tmp_path) == [
+        VersionFile(path="mypkg/__init__.py", variable="__version__")
+    ]
+
+
+def test_discover_version_files_accepts_an_uppercase_variable(tmp_path):
+    package(tmp_path)
+    (tmp_path / "src/mypkg/_version.py").write_text('VERSION = "1.2.3"\n')
+
+    assert discover_version_files(tmp_path) == [
+        VersionFile(path="src/mypkg/_version.py", variable="VERSION")
+    ]
+
+
+def test_discover_version_files_ignores_a_file_reading_the_metadata(tmp_path):
+    """
+    The state this whole offer exists to reach must not look like work to do.
+    """
+    package(tmp_path)
+    (tmp_path / "src/mypkg/__about__.py").write_text(
+        "from importlib.metadata import version\n\n__version__ = version(__package__)\n"
+    )
+
+    assert discover_version_files(tmp_path) == []
+
+
+def test_discover_version_files_ignores_a_literal_that_is_not_a_version(tmp_path):
+    package(tmp_path)
+    (tmp_path / "src/mypkg/__about__.py").write_text('__version__ = "unreleased"\n')
+
+    assert discover_version_files(tmp_path) == []
+
+
+def test_discover_version_files_ignores_an_unrelated_version_variable(tmp_path):
+    """
+    A bare `version` is as likely to be a schema version as this package's own.
+    """
+    package(tmp_path)
+    (tmp_path / "src/mypkg/__init__.py").write_text('version = "1.2.3"\n')
+
+    assert discover_version_files(tmp_path) == []
+
+
+def test_discover_version_files_reports_one_entry_per_file(tmp_path):
+    package(tmp_path)
+    (tmp_path / "src/mypkg/__about__.py").write_text(
+        '__version__ = "1.2.3"\nVERSION = "1.2.3"\n'
+    )
+
+    assert discover_version_files(tmp_path) == [
+        VersionFile(path="src/mypkg/__about__.py", variable="__version__")
+    ]
+
+
+def test_discover_version_files_finds_a_renamed_import_package(tmp_path):
+    """
+    A distribution and its import package are allowed to disagree.
+    """
+    write(tmp_path, '[project]\nname = "my-dist"\nversion = "1.2.3"\n')
+    directory = tmp_path / "src" / "different"
+    directory.mkdir(parents=True)
+    (directory / "__init__.py").write_text('__version__ = "1.2.3"\n')
+
+    assert discover_version_files(tmp_path) == [
+        VersionFile(path="src/different/__init__.py", variable="__version__")
+    ]
+
+
+def test_discover_version_files_normalises_a_dotted_distribution_name(tmp_path):
+    write(tmp_path, '[project]\nname = "My.Pkg"\nversion = "1.2.3"\n')
+    directory = tmp_path / "src" / "my_pkg"
+    directory.mkdir(parents=True)
+    (directory / "__about__.py").write_text('__version__ = "1.2.3"\n')
+
+    assert discover_version_files(tmp_path) == [
+        VersionFile(path="src/my_pkg/__about__.py", variable="__version__")
+    ]
+
+
+def test_discover_version_files_without_a_project_table(tmp_path):
+    write(tmp_path, "[tool.other]\nkey = 1\n")
+
+    assert discover_version_files(tmp_path) == []
+
+
+def test_discover_version_files_in_an_empty_directory(tmp_path):
+    assert discover_version_files(tmp_path) == []
+
+
+def test_discover_version_files_plans_a_rewrite_setup_can_apply(tmp_path):
+    """
+    What `setup` does with the result: a plan that rewrites, freezing nothing,
+    because `[project].version` is already there to keep the version.
+    """
+    package(tmp_path)
+    (tmp_path / "src/mypkg/__about__.py").write_text('__version__ = "1.2.3"\n')
+
+    plan = plan_version_migration(
+        tmp_path / "pyproject.toml", discover_version_files(tmp_path)
+    )
+
+    assert plan.transform is None
+    assert plan.rewrites == (
+        VersionFile(path="src/mypkg/__about__.py", variable="__version__"),
+    )
+    assert plan.question == "Point the version file at the installed metadata?"
+
+
+def test_discovered_files_plan_nothing_for_a_project_already_in_shape(tmp_path):
+    package(tmp_path)
+
+    plan = plan_version_migration(
+        tmp_path / "pyproject.toml", discover_version_files(tmp_path)
+    )
+
+    assert plan.empty

@@ -226,6 +226,77 @@ class VersionFile:
         return match.group("version") if match else None
 
 
+#: Filenames a project keeps its version literal in, most conventional first.
+VERSION_FILE_NAMES: tuple[str, ...] = (
+    "__about__.py",
+    "_version.py",
+    "version.py",
+    "__init__.py",
+)
+
+#: Variables that unambiguously hold a package version. A bare `version` is not
+#: here on purpose: it is as likely to be a schema or API version as this one.
+VERSION_VARIABLES: tuple[str, ...] = ("__version__", "VERSION")
+
+
+def discover_version_files(root: Path, pyproject: Path | None = None) -> list[VersionFile]:
+    """
+    Source files holding a hard-coded version literal.
+
+    `migrate` is told these by `version_variable`; `setup` has no such config to
+    read, so it looks where the convention puts them. A file already reading its
+    version from the installed metadata has no literal to match and so is never
+    a candidate -- which is precisely the state this exists to reach.
+    """
+    pyproject = pyproject or root / "pyproject.toml"
+    found: list[VersionFile] = []
+
+    for directory in _package_dirs(root, pyproject):
+        for name in VERSION_FILE_NAMES:
+            path = directory / name
+            if not path.is_file():
+                continue
+            relative = path.relative_to(root).as_posix()
+            for variable in VERSION_VARIABLES:
+                candidate = VersionFile(path=relative, variable=variable)
+                if parse_version(candidate.read(root)):
+                    # one entry per file: the first variable holding a version
+                    # is the one being maintained
+                    found.append(candidate)
+                    break
+
+    return found
+
+
+def _package_dirs(root: Path, pyproject: Path) -> list[Path]:
+    """
+    Where this project's import package could live, without importing it.
+
+    The name in `[project]` comes first, then whatever actually sits under
+    `src`: a distribution and its import package are allowed to disagree, and
+    renaming one without the other is common enough to look for.
+    """
+    candidates: list[Path] = []
+
+    if name := project_name(pyproject):
+        module = normalise_name(name).replace("-", "_")
+        candidates += [root / "src" / module, root / module]
+
+    source = root / "src"
+    if source.is_dir():
+        candidates += sorted(
+            child
+            for child in source.iterdir()
+            if child.is_dir() and (child / "__init__.py").is_file()
+        )
+
+    ordered: list[Path] = []
+    for candidate in candidates:
+        if candidate.is_dir() and candidate not in ordered:
+            ordered.append(candidate)
+    return ordered
+
+
 @dc.dataclass(frozen=True)
 class Note:
     key: str

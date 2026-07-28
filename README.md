@@ -206,6 +206,29 @@ When `git.branch` is left at `<head>`, `setup` pins a concrete name: the remote'
 default branch when there is a remote, otherwise the branch that is checked out.
 Only with neither does it fall back to `init.defaultBranch`.
 
+### Where the version lives
+
+`setup` also looks for a version written down twice. A literal in
+`__about__.py`, `_version.py`, `version.py` or `__init__.py` is a version Vommit
+does not bump: the next release moves `[project].version` and leaves
+`__version__` behind. It offers to read it from the installed metadata instead,
+so there is one version again:
+
+```python
+from importlib.metadata import version
+
+__version__ = version(__package__)
+```
+
+A project declaring `dynamic = ["version"]` gets the same offer plus the freeze
+it needs, because `uv version` — which every bump goes through — refuses a
+dynamic version outright. When the version cannot be recovered at all, for
+instance with `[tool.hatch.version] source = "vcs"`, `setup` says so and leaves
+the rest of the configuration in place.
+
+Nothing is rewritten without being asked: `vommit setup --non-interactive` prints
+what it would change and stops.
+
 The most useful settings to revisit are:
 
 | Setting | Purpose |

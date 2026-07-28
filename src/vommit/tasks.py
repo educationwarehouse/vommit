@@ -31,6 +31,7 @@ from .config import DERIVE_BRANCH, TOML_KEY, Config
 from .errors import VommitError
 from .git import GitRepo
 from .helpers import relative_path
+from .interactive import Prompts
 from .migrate import (
     PSR_KEY,
     Migration,
@@ -38,6 +39,7 @@ from .migrate import (
     UnsupportedPolicy,
     VersionPlan,
     apply_static_version,
+    discover_version_files,
     parse_unsupported_policy,
     plan_version_migration,
     read_psr,
@@ -45,7 +47,6 @@ from .migrate import (
     strip_psr,
     translate,
 )
-from .interactive import Prompts
 from .release import ReleaseRequest, ReleaseResult, Step, run_release
 from .scaffold import (
     DEFAULT_BRANCH,
@@ -360,6 +361,40 @@ def setup(
                 config = Config.interactive(config, present_paths=present_paths)
 
         _write_config(c, config, root, pyproject)
+        _offer_version_files(root, pyproject, non_interactive)
+
+
+def _offer_version_files(root: Path, pyproject: Path, non_interactive: bool) -> None:
+    """
+    Offer to stop this project writing its version down in two places.
+
+    A source file holding a literal is the version vommit does not bump: the
+    next release moves `[project].version` and leaves `__version__` behind.
+    Reading it from the installed metadata instead has one version again.
+    """
+    try:
+        plan = plan_version_migration(
+            pyproject, discover_version_files(root, pyproject)
+        )
+    except VommitError as error:
+        # the config is already written and works; the version shape is a
+        # separate problem, and naming it beats failing the whole command
+        rich.print(
+            f"[yellow]The version could not be made bumpable: "
+            f"{escape(str(error))}[/yellow]"
+        )
+        return
+
+    if plan.empty:
+        return
+
+    if non_interactive:
+        rich.print("[blue]Run `vommit setup` to fix how the version is stored:[/blue]")
+        for step in plan.steps:
+            rich.print(f"  [dim]-[/dim] {escape(step)}")
+        return
+
+    _apply_version_plan(plan, root, pyproject, yes=False)
 
 
 def _write_config(c: Context, config: Config, root: Path, pyproject: Path) -> None:
@@ -419,7 +454,7 @@ def migrate(
         _write_config(c, config, root, pyproject)
         rich.print(f"[green]Wrote[/green] {escape(f'[{TOML_KEY}]')} to {pyproject}")
 
-        _migrate_version(plan, root, pyproject, yes)
+        _apply_version_plan(plan, root, pyproject, yes)
         _migrate_cleanup(pyproject, yes)
 
 
@@ -486,14 +521,17 @@ def _migrate_choice(report: MigrationReport, yes: bool) -> MigrateChoice:
     )
 
 
-def _migrate_version(
+def _apply_version_plan(
     plan: VersionPlan,
     root: Path,
     pyproject: Path,
     yes: bool,
 ) -> None:
     """
-    Carry out the version half of the migration, once it has been agreed to.
+    Carry out a version plan, once it has been agreed to.
+
+    Shared by `migrate`, which learns the files from v7's `version_variable`,
+    and `setup`, which finds them by convention.
     """
     if plan.empty:
         return
