@@ -46,6 +46,8 @@ Supported settings are mapped to `[tool.vommit]`; values that have no equivalent
 than silently discarded. Migration refuses non-angular commit parsers, non-`[project].version`
 `version_toml` targets, and `version_pattern`, because those would produce an unusable release setup.
 
+Only `pyproject.toml` is read. `setup.cfg` is not supported.
+
 If the project has a dynamic version, hatchling and setuptools projects can be fixed during migration:
 the current version is frozen into `[project].version`, the backend hook is removed, and configured
 version files are changed to read installed metadata:

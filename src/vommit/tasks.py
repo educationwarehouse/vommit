@@ -25,9 +25,11 @@ from .migrate import (
     PSR_KEY,
     Migration,
     MigrationReport,
-    VersionFile,
+    UnsupportedPolicy,
+    VersionPlan,
     apply_static_version,
-    plan_static_version,
+    parse_unsupported_policy,
+    plan_version_migration,
     read_psr,
     rewrite_version_files,
     strip_psr,
@@ -37,7 +39,6 @@ from .shell import ContextRunner
 from .undo import UndoPlan, UndoResult, run_undo
 
 SetupMode = t.Literal["missing", "all"]
-UnsupportedPolicy = t.Literal["warn", "error", "skip"]
 MigrateChoice = t.Literal["interactive", "copy", "stop"]
 
 MIGRATE_CHOICES: dict[MigrateChoice, str] = {
@@ -224,7 +225,7 @@ def _write_config(c: Context, config: Config, root: Path, pyproject: Path) -> No
 def migrate(
     c: Context,
     project_dir: str | None = None,
-    on_unsupported: UnsupportedPolicy = "warn",
+    on_unsupported: str = "warn",
     yes: bool = False,
 ) -> None:
     """
@@ -239,6 +240,8 @@ def migrate(
     pyproject = root / "pyproject.toml"
 
     with _reported():
+        policy = parse_unsupported_policy(on_unsupported)
+
         raw = read_psr(pyproject)
         if raw is None:
             raise VommitError(
@@ -247,7 +250,15 @@ def migrate(
             )
 
         migration = translate(raw)
-        _report_migration(migration.report, on_unsupported)
+        _report_migration(migration.report, policy)
+
+        # planned before the first write, so a project this cannot migrate is
+        # refused whole rather than left with two live release configs
+        plan = plan_version_migration(
+            pyproject,
+            migration.version_files,
+            fallback=_last_released_version(c, migration.config, root),
+        )
 
         config = _migrated_config(migration, yes)
         if config is None:
@@ -257,7 +268,7 @@ def migrate(
         _write_config(c, config, root, pyproject)
         rich.print(f"[green]Wrote[/green] {escape(f'[{TOML_KEY}]')} to {pyproject}")
 
-        _migrate_version(c, config, root, pyproject, migration.version_files, yes)
+        _migrate_version(plan, root, pyproject, yes)
         _migrate_cleanup(pyproject, yes)
 
 
@@ -325,46 +336,29 @@ def _migrate_choice(report: MigrationReport, yes: bool) -> MigrateChoice:
 
 
 def _migrate_version(
-    c: Context,
-    config: Config,
+    plan: VersionPlan,
     root: Path,
     pyproject: Path,
-    version_files: list[VersionFile],
     yes: bool,
 ) -> None:
     """
-    Make the version bumpable: static in `[project]`, derived in the source.
-
-    The two halves are one change. Rewriting `__version__` while the backend
-    still reads its version from that file leaves the package unbuildable.
+    Carry out the version half of the migration, once it has been agreed to.
     """
-    transform = plan_static_version(
-        pyproject, version_files, fallback=_last_released_version(c, config, root)
-    )
-    if transform is None and not version_files:
+    if plan.empty:
         return
 
-    steps = list(transform.steps) if transform else []
-    steps += [
-        f"rewrite {version_file.path} to "
-        f"`{version_file.variable} = version(__package__)`"
-        for version_file in version_files
-    ]
-    for step in steps:
+    for step in plan.steps:
         rich.print(f"  [dim]-[/dim] {escape(step)}")
+    for note in plan.warnings:
+        rich.print(f"  [yellow]![/yellow] {escape(note.key)}: {escape(note.detail)}")
 
-    question = (
-        "This project declares a dynamic version, which cannot be bumped. Fix it?"
-        if transform
-        else "Point the version file at the installed metadata?"
-    )
-    if not _confirm(question, yes):
+    if not _confirm(plan.question, yes):
         rich.print("[yellow]Left the version alone.[/yellow]")
         return
 
-    if transform:
-        apply_static_version(pyproject, transform)
-    result = rewrite_version_files(version_files, root)
+    if plan.transform:
+        apply_static_version(pyproject, plan.transform)
+    result = rewrite_version_files(plan.rewrites, root)
 
     for path in result.changed:
         rich.print(f"[green]Rewrote[/green] {escape(relative_path(path, root))}")
@@ -419,7 +413,9 @@ def _confirm(question: str, yes: bool, default: bool = True) -> bool:
     if yes:
         return True
     if not sys.stdin.isatty():
-        rich.print(f"[yellow]{question} No terminal to ask on; skipped.[/yellow]")
+        rich.print(
+            f"[yellow]{escape(question)} No terminal to ask on; skipped.[/yellow]"
+        )
         return False
     return bool(questionary.confirm(question, default=default).ask())
 
