@@ -1,7 +1,7 @@
 [project]
 name = "vommit"
 version = "0.0.0"
-description = "Add your description here"
+description = "Vommit Oversees Making & Managing Installable Things"
 readme = "README.md"
 authors = [
     { name = "Robin van der Noord", email = "robinvandernoord@gmail.com" }
@@ -10,8 +10,10 @@ requires-python = ">=3.13"
 dependencies = [
     "configuraptor >= 2.5.4, < 3",
     "ewok",
+    "keyring",
     "packaging",
     "questionary >= 2, < 3",
+    "requests",
     "rich",
     "tomlkit",
 ]
@@ -20,6 +22,10 @@ dependencies = [
 vommit = "vommit.cli:program.run"
 
 [project.optional-dependencies]
+# the default keyring backend needs a desktop session; this one works over SSH
+ssh = [
+    "ssh-agent-keyring",
+]
 dev = [
     "pytest",
     "pytest-cov",
@@ -94,14 +100,13 @@ docs = "Documentation"
 
 [tool.vommit.pypi]
 enabled = true
-username = "__token__"
 use_keyring = true
 
 [tool.vommit.commands]
-clean = "rm -r ./dist"
+clean = "rm -rf ./dist"
 build = "uv build"
 publish = "uv publish"
-release = "{clean} && {build} && {publish}"
+post_publish = ""
 
 [tool.vommit.version_bump_map]
 break = "major"

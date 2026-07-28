@@ -392,3 +392,44 @@ def test_unstage_without_paths_runs_nothing(sandbox):
     runner = FakeRunner()
     GitRepo(runner=runner, root=sandbox.work).unstage([])
     assert runner.calls == []
+
+
+def test_push_sends_the_branch(sandbox):
+    repo = repo_of(sandbox)
+    sandbox.commit("feat: something", empty=True)
+
+    repo.push("origin", "main")
+
+    assert sandbox.git("log", "-1", "--format=%s", "origin/main").out == (
+        "feat: something"
+    )
+
+
+def test_push_reports_a_failure(sandbox):
+    with pytest.raises(VommitError, match="push 'nope' to 'origin'"):
+        repo_of(sandbox).push("origin", "nope")
+
+
+def test_push_tag_sends_a_lightweight_tag(sandbox):
+    # --follow-tags would silently skip this one; pushing the ref does not
+    repo = repo_of(sandbox)
+    repo.tag("v1.0.0")
+
+    repo.push_tag("origin", "v1.0.0")
+
+    assert repo.remote_has_tag("origin", "v1.0.0") is True
+
+
+def test_push_tag_sends_only_the_named_tag(sandbox):
+    repo = repo_of(sandbox)
+    repo.tag("v1.0.0")
+    repo.tag("scratch")
+
+    repo.push_tag("origin", "v1.0.0")
+
+    assert repo.remote_has_tag("origin", "scratch") is False
+
+
+def test_push_tag_reports_a_failure(sandbox):
+    with pytest.raises(VommitError, match="push tag 'v9.9.9'"):
+        repo_of(sandbox).push_tag("origin", "v9.9.9")

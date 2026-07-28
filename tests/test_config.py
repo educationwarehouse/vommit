@@ -169,23 +169,10 @@ def test_changelog_entry_title_defaults_to_today():
 
 def test_pypi_defaults():
     config = PypiConfig.default()
-    assert config.username == "__token__"
+    assert config.enabled is True
     assert config.use_keyring is True
-
-
-def test_commands_release_template():
-    config = CommandConfig.load(
-        {
-            "clean": "rm -rf dist",
-            "build": "python -m build",
-            "publish": "twine upload dist/*",
-            "release": "{clean} ; {build} ; {publish}",
-        },
-    )
-
-    assert (
-        config.release_command == "rm -rf dist ; python -m build ; twine upload dist/*"
-    )
+    # dropped when auth became token-only: UV_PUBLISH_TOKEN implies __token__
+    assert not hasattr(config, "username")
 
 
 def test_version_bump_map_config():

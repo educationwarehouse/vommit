@@ -266,28 +266,24 @@ class ChangelogConfig(TypedConfig, Defaultable):
 
 class PypiConfig(TypedConfig, Defaultable):
     enabled: t.Annotated[bool, "Enable PyPI publishing?"] = True
-    username: t.Annotated[str, "PyPI username"] = "__token__"
+    # off means "whatever the environment already provides": vommit then sets no
+    # credentials of its own and an ambient UV_PUBLISH_TOKEN still works.
     use_keyring: t.Annotated[bool, "Use keyring for PyPI auth?"] = True
 
 
 class CommandConfig(TypedConfig, Defaultable):
-    clean: t.Annotated[str, "Clean command"] = "rm -r ./dist"
-    build: t.Annotated[str, "Build command"] = "uv build"
-    publish: t.Annotated[str, "Publish command"] = "uv publish"
+    """
+    The three commands a release runs, in that order.
 
-    release: t.Annotated[
-        str,
-        "Release pipeline command",
-        {"interactive": False},
-    ] = "{clean} && {build} && {publish}"
+    Leave one empty to skip it: a project that has nothing to clean sets
+    `clean = ""` rather than finding a command that does nothing.
+    """
 
-    @property
-    def release_command(self) -> str:
-        return self.release.format(
-            clean=self.clean,
-            build=self.build,
-            publish=self.publish,
-        )
+    clean: t.Annotated[str, "Clean command (empty to skip)"] = "rm -rf ./dist"
+    build: t.Annotated[str, "Build command (empty to skip)"] = "uv build"
+    publish: t.Annotated[str, "Publish command (empty to skip)"] = "uv publish"
+    # runs only when `publish` did, so it can assume there is something to tidy
+    post_publish: t.Annotated[str, "Command to run after publishing"] = ""
 
 
 def _if_enabled[SectionT: TypedConfig](section: SectionT | None) -> SectionT | None:
