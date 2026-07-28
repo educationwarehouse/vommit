@@ -10,5 +10,5 @@ def test_about_version_matches_pyproject_project_version() -> None:
     data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
     project_version = data["project"]["version"]
 
-    assert __version__ == project_version
+    assert __version__ == project_version, "version mismatch - you should probably (re)run `uv pip install -e .`"
     assert dist_version("vommit") == project_version
