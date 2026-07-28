@@ -625,14 +625,15 @@ def _translate_commands(work: _Translation) -> None:
         work.assign("build_command", "commands.build", str(work.get("build_command")))
 
     dist_path = str(work.get("dist_path")).rstrip("/")
-    work.assign("dist_path", "commands.clean", f"rm -r ./{dist_path}")
+    work.assign("dist_path", "commands.clean", f"rm -rf ./{dist_path}")
 
     if not work.get("remove_dist"):
+        # an empty command is how a step is switched off
         work.assign(
             "remove_dist",
-            "commands.release",
-            "{build} && {publish}",
-            detail="release pipeline no longer cleans dist first",
+            "commands.clean",
+            "",
+            detail="release no longer cleans dist first",
         )
 
 

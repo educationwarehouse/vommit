@@ -15,6 +15,16 @@ from ewok import Context, task
 from invoke import Exit
 from rich.markup import escape
 
+from .auth import (
+    ENVIRONMENT,
+    KEYRING,
+    PROMPT,
+    TOKEN_VAR,
+    TokenStore,
+    environment_token,
+    mask,
+    verify_token,
+)
 from .bump import BumpRequest, BumpResult, always, run_bump, select_level
 from .changelog import Changelog
 from .config import DERIVE_BRANCH, TOML_KEY, Config
@@ -35,6 +45,7 @@ from .migrate import (
     strip_psr,
     translate,
 )
+from .release import ReleaseRequest, ReleaseResult, Step, run_release
 from .shell import ContextRunner
 from .undo import UndoPlan, UndoResult, run_undo
 
@@ -114,6 +125,44 @@ def _undo_steps(plan: UndoPlan) -> list[str]:
     if plan.changelog_path:
         steps.append(f"remove the {plan.version} entry from {plan.changelog_path.name}")
     return steps
+
+
+def _report_release(result: ReleaseResult) -> None:
+    if result.cancelled:
+        rich.print("[yellow]Cancelled; nothing was written.[/yellow]")
+        return
+
+    if result.bump:
+        _report(result.bump)
+    elif result.noop:
+        rich.print(f"[green]Version {result.version}[/green] [dim](noop)[/dim]")
+
+    if result.noop:
+        _report_planned(result.steps)
+        return
+
+    if result.pushed:
+        rich.print("[green]Pushed[/green]")
+    if result.published:
+        rich.print(f"[green]Published[/green] {result.version}")
+
+
+def _report_planned(steps: tuple[Step, ...]) -> None:
+    if not steps:
+        return
+    rich.print("\n[dim]would run:[/dim]")
+    for step in steps:
+        rich.print(f"  [dim]{step.name}:[/dim] {escape(step.command)}")
+
+
+@contextmanager
+def _step(name: str) -> t.Iterator[None]:
+    """
+    Show that a command is running; its output only surfaces when it fails.
+    """
+    with rich.get_console().status(f"[blue]{escape(name)}[/blue]"):
+        yield
+    rich.print(f"[green]{name}[/green]")
 
 
 def _bump_question(result: BumpResult) -> str:
@@ -523,22 +572,172 @@ def _undo(
 
 
 @task()
+def authenticate(_: Context, no_verify: bool = False, clear: bool = False) -> None:
+    """
+    Store a PyPI token in the keyring, replacing any token already there.
+
+    The token is checked against PyPI before it is stored, so a mistyped one is
+    caught now rather than at the end of a release, and a rejected one leaves
+    the token you already had in place. Pass --no-verify for an index that
+    issues tokens PyPI would not recognise, or --clear to drop the stored token
+    before being asked for the new one.
+    """
+    store = TokenStore()
+    with _reported():
+        if clear:
+            rich.print(
+                "[yellow]Cleared the stored token.[/yellow]"
+                if store.forget()
+                else "[yellow]No stored token to clear.[/yellow]"
+            )
+
+        existing = store.stored()
+        token = _ask_token(replacing=bool(existing))
+        store.store(token if no_verify else _verified(token, existing))
+    rich.print("[green]Token stored.[/green]")
+
+
+@task()
+def ensure_authenticated(_: Context, show: bool = False) -> None:
+    """
+    Make sure a PyPI token is available, asking only when there is none.
+
+    Usable as a `pre` task; `release` calls the same resolution in-process, so
+    that a `--noop` run is not stopped for a credential it will never use.
+    Pass --show to see which token that is and where it came from.
+    """
+    with _reported():
+        source, token = _sourced_token(Config.from_pyproject())
+
+    if show:
+        rich.print(f"[green]PyPI token[/green] from the {source}: {mask(token)}")
+    else:
+        rich.print("[green]PyPI token available.[/green]")
+
+
+def _verified(token: str, existing: str | None) -> str:
+    """
+    Check the token, and on a refusal say what that leaves you with.
+    """
+    try:
+        return verify_token(token, notify=_notify)
+    except VommitError as error:
+        if not existing:
+            raise
+        raise VommitError(
+            f"{error}\nThe token already stored ({mask(existing)}) is untouched."
+        ) from error
+
+
+def _token(config: Config) -> str:
+    return _sourced_token(config)[1]
+
+
+def _sourced_token(config: Config) -> tuple[str, str]:
+    """
+    A token from the environment, the keyring, or the person at the keyboard.
+
+    `pypi.use_keyring = false` means "ask me every time": the token is used for
+    this release and not written anywhere.
+    """
+    if token := environment_token():
+        return ENVIRONMENT, token
+
+    pypi = config.active_pypi
+    if pypi and not pypi.use_keyring:
+        asked = _ask_token(replacing=False, storing=False)
+        return PROMPT, verify_token(asked, notify=_notify)
+
+    store = TokenStore()
+    if token := store.stored():
+        return KEYRING, token
+    if not sys.stdin.isatty():
+        # the message names both ways out, so a CI failure is actionable
+        return KEYRING, store.require()
+
+    token = verify_token(_ask_token(replacing=False), notify=_notify)
+    store.store(token)
+    return PROMPT, token
+
+
+def _ask_token(replacing: bool, storing: bool = True) -> str:
+    if not sys.stdin.isatty():
+        raise VommitError(
+            f"No PyPI token found and no terminal to ask on; set {TOKEN_VAR} "
+            "in the environment, or run `vommit authenticate`."
+        )
+    lead = "Replace the stored PyPI token" if replacing else "PyPI token"
+    tail = "" if storing else ", used once and not stored"
+    answer = questionary.password(f"{lead} (input hidden{tail}):").ask()
+    if not answer:
+        raise VommitError("No token entered.")
+    return str(answer)
+
+
+@task()
 def release(
-    _: Context,
+    c: Context,
     major: bool = False,
     minor: bool = False,
     patch: bool = False,
-) -> None:
+    prerelease: bool = False,
+    noop: bool = False,
+    version: str | None = None,
+    allow_dirty: bool = False,
+    no_bump: bool = False,
+    yes: bool = False,
+) -> str | None:
     """
-    Release:
-    - git pull
-    - bump
-    - git push
-    - (clean dist)
-    - uv build
-    - uv publish
+    Bump, build, push and publish.
+
+    Runs the bump, then the configured clean and build commands, then pushes the
+    commit and its tag, and publishes last: a failure before the push can still
+    be undone, and PyPI never receives a version that the remote does not have.
+    Use --noop to see the plan, and --no-bump to publish the current version.
     """
-    _config = Config.from_pyproject()
+    root = Path.cwd()
+    config = Config.from_pyproject(root)
+
+    with _reported():
+        result = run_release(
+            config=config,
+            runner=ContextRunner(c),
+            root=root,
+            request=ReleaseRequest(
+                bump=BumpRequest(
+                    level=select_level(major, minor, patch),
+                    version=version,
+                    prerelease=prerelease,
+                    noop=noop,
+                    allow_dirty=allow_dirty,
+                ),
+                no_bump=no_bump,
+            ),
+            notify=_notify,
+            confirm=_asker(config, yes, _bump_question),
+            confirm_version=lambda current: _confirm(
+                f"No version-worthy changes found; publish {current} as it is?",
+                yes=yes,
+                default=False,
+            ),
+            # deliberately not routed through `_asker`: `config.confirm` turns
+            # off the routine "shall I release?" question, and must not also
+            # silence a warning that something is actually out of step
+            confirm_stale=lambda stale: _confirm(
+                stale.question, yes=yes, default=False
+            ),
+            authenticate=lambda: _token(config),
+            report_step=_step,
+        )
+
+    if result is None:
+        rich.print("[yellow]Nothing to release.[/yellow]")
+        return None
+
+    _report_release(result)
+    if result.cancelled:
+        raise Exit(code=1)
+    return result.version
 
 
 # todo: 'init' to make a whole new project? = uv init + setup

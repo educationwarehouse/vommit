@@ -188,10 +188,16 @@ class GitRepo:
             return []
         return split_commit_log(result.stdout)
 
-    def head_subject(self) -> str:
+    def subject(self, ref: str = "HEAD") -> str:
+        """
+        The first line of `ref`'s commit message, for naming it to a human.
+        """
         return self._checked(
-            "log", "-1", "--format=%s", action="read the last commit message"
+            "log", "-1", "--format=%s", ref, action=f"read the message of '{ref}'"
         ).out
+
+    def head_subject(self) -> str:
+        return self.subject()
 
     def tag_commit(self, tag: str) -> str | None:
         """
@@ -243,15 +249,29 @@ class GitRepo:
         result = self._git("show", f"{ref}:{path}")
         return result.stdout if result.ok else None
 
+    def _changed(self) -> set[str]:
+        result = self._checked(
+            "status", "--porcelain", action="inspect the working tree"
+        )
+        return {line[3:].strip() for line in result.stdout.splitlines() if line}
+
     def dirty_paths(self, paths: t.Iterable[str]) -> list[str]:
         """
         Which of `paths` already have uncommitted changes.
         """
-        result = self._checked(
-            "status", "--porcelain", action="inspect the working tree"
-        )
-        changed = {line[3:].strip() for line in result.stdout.splitlines() if line}
+        changed = self._changed()
         return sorted(path for path in paths if path in changed)
+
+    def uncommitted(self) -> list[str]:
+        """
+        Every path the working tree has changed, whether tracked or not.
+
+        Wider than `dirty_paths` on purpose: a release builds the tree it is
+        standing in, so an untracked source file ends up in the artifact just
+        as surely as a modified one does. Ignored files stay out, since git
+        does not report them and a build would not pick them up either.
+        """
+        return sorted(self._changed())
 
     def add(self, paths: t.Iterable[str]) -> None:
         targets = list(paths)
@@ -279,6 +299,25 @@ class GitRepo:
     def tag(self, name: str) -> None:
         self.ensure_tag_available(name)
         self._checked("tag", name, action=f"create tag '{name}'")
+
+    def push(self, origin: str, branch: str) -> None:
+        self._checked("push", origin, branch, action=f"push '{branch}' to '{origin}'")
+
+    def push_tag(self, origin: str, tag: str) -> None:
+        """
+        Push one tag, by ref.
+
+        Not `--follow-tags`, which silently skips lightweight tags and ours are
+        lightweight, and not `--tags`, which would push every tag lying around
+        the repository. Naming the ref also means a failure here is reported as
+        the tag failing rather than the branch.
+        """
+        self._checked(
+            "push",
+            origin,
+            f"refs/tags/{tag}",
+            action=f"push tag '{tag}' to '{origin}'",
+        )
 
 
 def here(root: str | Path | None = None) -> GitRepo:

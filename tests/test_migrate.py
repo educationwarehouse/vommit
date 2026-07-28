@@ -252,18 +252,18 @@ def test_tag_commit_off_clears_the_tag_format(tmp_path):
 
 
 def test_dist_path_becomes_the_clean_command(tmp_path):
-    assert translate(psr(tmp_path)).config.commands.clean == "rm -r ./dist"
+    assert translate(psr(tmp_path)).config.commands.clean == "rm -rf ./dist"
     assert (
         translate(psr(tmp_path, "dist_path = 'build/out/'\n")).config.commands.clean
-        == "rm -r ./build/out"
+        == "rm -rf ./build/out"
     )
 
 
 def test_remove_dist_off_drops_the_clean_step(tmp_path):
     config = translate(psr(tmp_path, "remove_dist = false\n")).config
 
-    assert "{clean}" not in config.commands.release
-    assert config.commands.release_command == "uv build && uv publish"
+    assert config.commands.clean == ""
+    assert config.commands.build == "uv build"
 
 
 def test_either_upload_switch_disables_publishing(tmp_path):
