@@ -78,7 +78,14 @@ Stores a token in your keyring under `vommit`/`pypi`, replacing any token alread
 checked first: it has to look like a PyPI token, and PyPI has to accept it. An unreachable index
 is not held against the token. `--no-verify` skips both checks.
 
-`vommit ensure-authenticated` asks only when there is no token yet, and works as a `pre` task.
+A rejected token is never stored, so a failed rotation leaves the one you had. The error says so,
+and names it.
+
+```bash
+vommit ensure-authenticated          # asks only when there is no token yet; works as a `pre` task
+vommit ensure-authenticated --show   # PyPI token from the keyring: pypi-AgEI...LWFi
+vommit authenticate --clear          # drop the stored token, then ask for a new one
+```
 
 A release looks in three places, in order:
 

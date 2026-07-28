@@ -344,3 +344,18 @@ allowing `--allow-dirty`, since the build still runs.
 Not the same thing. `--tags` pushes every tag in the repository, including stale local ones;
 the explicit ref pushes exactly the release tag. The full ref rather than the bare name also
 avoids the ambiguity when a branch shares the tag's name.
+
+## Third review round
+
+A rejected token left the previous one in place, correctly, but said nothing about it, and
+`ensure-authenticated` succeeded in silence. Both read as "it ignored me".
+
+- `authenticate` now names the surviving token when it refuses a new one:
+  "The token already stored (pypi-AgEI...LWFi) is untouched."
+- `ensure-authenticated` says "PyPI token available.", and `--show` says which one and from
+  where: "PyPI token from the keyring: pypi-AgEI...LWFi".
+- `authenticate --clear` drops the stored token and then asks for a new one, so the prompt
+  that follows is the first-time one rather than the replace-it one.
+- `mask` shows the first nine characters and the last four. Anything under twenty characters
+  is not a real token, so those get the tail only; nine characters of `pypi-123` would be
+  most of it.

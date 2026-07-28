@@ -21,6 +21,11 @@ class FakeKeyring:
     def set_password(self, service: str, username: str, password: str) -> None:
         self.stored[(service, username)] = password
 
+    def delete_password(self, service: str, username: str) -> None:
+        if (service, username) not in self.stored:
+            raise keyring.errors.PasswordDeleteError("not found")
+        del self.stored[(service, username)]
+
 
 class BrokenKeyring:
     """
@@ -33,12 +38,16 @@ class BrokenKeyring:
     def set_password(self, service: str, username: str, password: str) -> None:
         raise keyring.errors.NoKeyringError("No recommended backend was available")
 
+    def delete_password(self, service: str, username: str) -> None:
+        raise keyring.errors.NoKeyringError("No recommended backend was available")
+
 
 @pytest.fixture
 def fake_keyring(monkeypatch) -> FakeKeyring:
     fake = FakeKeyring()
     monkeypatch.setattr(auth.keyring, "get_password", fake.get_password)
     monkeypatch.setattr(auth.keyring, "set_password", fake.set_password)
+    monkeypatch.setattr(auth.keyring, "delete_password", fake.delete_password)
     monkeypatch.delenv(auth.TOKEN_VAR, raising=False)
     return fake
 
@@ -48,6 +57,7 @@ def broken_keyring(monkeypatch) -> None:
     broken = BrokenKeyring()
     monkeypatch.setattr(auth.keyring, "get_password", broken.get_password)
     monkeypatch.setattr(auth.keyring, "set_password", broken.set_password)
+    monkeypatch.setattr(auth.keyring, "delete_password", broken.delete_password)
 
 
 @pytest.fixture
@@ -244,3 +254,51 @@ def test_a_405_is_not_taken_as_approval(monkeypatch):
     auth.verify_token("pypi-abc", notify=said.append)
 
     assert said == [], "405 is not a rejection, but it is not a blessing either"
+
+
+# --- forgetting and showing ---------------------------------------------------
+
+
+def test_forget_token_removes_it(fake_keyring):
+    auth.store_token("pypi-abc")
+
+    assert auth.forget_token() is True
+    assert auth.stored_token() is None
+
+
+def test_forget_token_is_false_when_there_was_nothing(fake_keyring):
+    assert auth.forget_token() is False
+
+
+def test_forget_token_reports_a_broken_backend(broken_keyring):
+    with pytest.raises(VommitError, match="Could not clear the keyring"):
+        auth.forget_token()
+
+
+def test_mask_shows_the_ends_of_a_real_token():
+    token = "pypi-AgEIcHlwaS5vcmcCJDU0NzhhMjRlLWQxMmMtNDkxNC1iN2Y0LWFi"
+
+    assert auth.mask(token) == "pypi-AgEI...LWFi"
+    assert token[10:-4] not in auth.mask(token)
+
+
+def test_mask_of_something_short_gives_away_only_the_tail():
+    # not a real token, so nine characters would be most of it
+    assert auth.mask("pypi-123") == "...-123"
+
+
+def test_available_token_prefers_the_environment(fake_keyring, monkeypatch):
+    fake_keyring.stored[("vommit", "pypi")] = "pypi-stored"
+    monkeypatch.setenv(auth.TOKEN_VAR, "pypi-env")
+
+    assert auth.available_token() == (auth.ENVIRONMENT, "pypi-env")
+
+
+def test_available_token_falls_back_to_the_keyring(fake_keyring):
+    fake_keyring.stored[("vommit", "pypi")] = "pypi-stored"
+
+    assert auth.available_token() == (auth.KEYRING, "pypi-stored")
+
+
+def test_available_token_is_none_when_there_is_nothing(fake_keyring):
+    assert auth.available_token() is None

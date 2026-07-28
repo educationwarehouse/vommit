@@ -25,6 +25,11 @@ USERNAME = "pypi"
 TOKEN_VAR = "UV_PUBLISH_TOKEN"
 TOKEN_PREFIX = "pypi-"
 
+# where a token was found, for saying so out loud
+ENVIRONMENT = f"{TOKEN_VAR} environment variable"
+KEYRING = "keyring"
+PROMPT = "prompt"
+
 UPLOAD_URL = "https://upload.pypi.org/legacy/"
 # enough of an upload for the index to authenticate it before finding it wanting
 UPLOAD_FORM = {":action": "file_upload", "protocol_version": "1"}
@@ -71,6 +76,44 @@ def store_token(
         keyring.set_password(service, username, token.strip())
     except keyring.errors.KeyringError as error:
         raise VommitError(f"Could not write to the keyring: {error}\n{_NO_BACKEND}")
+
+
+def forget_token(service: str = SERVICE, username: str = USERNAME) -> bool:
+    """
+    Remove the stored token; False when there was nothing to remove.
+    """
+    try:
+        keyring.delete_password(service, username)
+    except keyring.errors.PasswordDeleteError:
+        return False
+    except keyring.errors.KeyringError as error:
+        raise VommitError(f"Could not clear the keyring: {error}\n{_NO_BACKEND}")
+    return True
+
+
+def mask(token: str) -> str:
+    """
+    Enough of a token to recognise it by, never enough to use it.
+
+    A short value is not a real token, so showing nine characters of it would
+    give away most of whatever it is; those get the tail only.
+    """
+    tail = token[-4:]
+    return f"{token[:9]}...{tail}" if len(token) >= 20 else f"...{tail}"
+
+
+def available_token(
+    service: str = SERVICE,
+    username: str = USERNAME,
+) -> tuple[str, str] | None:
+    """
+    The token a release would pick up, and where it came from.
+    """
+    if token := environment_token():
+        return ENVIRONMENT, token
+    if token := stored_token(service, username):
+        return KEYRING, token
+    return None
 
 
 def require_token(service: str = SERVICE, username: str = USERNAME) -> str:
