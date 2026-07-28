@@ -13,16 +13,39 @@ import questionary
 import rich
 from ewok import Context, task
 from invoke import Exit
+from rich.markup import escape
 
 from .bump import BumpRequest, BumpResult, always, run_bump, select_level
 from .changelog import Changelog
-from .config import DERIVE_BRANCH, Config
+from .config import DERIVE_BRANCH, TOML_KEY, Config
 from .errors import VommitError
 from .git import GitRepo
+from .helpers import relative_path
+from .migrate import (
+    PSR_KEY,
+    Migration,
+    MigrationReport,
+    UnsupportedPolicy,
+    VersionPlan,
+    apply_static_version,
+    parse_unsupported_policy,
+    plan_version_migration,
+    read_psr,
+    rewrite_version_files,
+    strip_psr,
+    translate,
+)
 from .shell import ContextRunner
 from .undo import UndoPlan, UndoResult, run_undo
 
 SetupMode = t.Literal["missing", "all"]
+MigrateChoice = t.Literal["interactive", "copy", "stop"]
+
+MIGRATE_CHOICES: dict[MigrateChoice, str] = {
+    "interactive": "interactive - walk through every setting, pre-filled from v7",
+    "copy": "copy - write the translated config as it stands",
+    "stop": "stop - write nothing (the report above was the dry run)",
+}
 
 
 @contextmanager
@@ -34,7 +57,7 @@ def _reported() -> t.Iterator[None]:
         yield
     except VommitError as error:
         # Exit prints its message verbatim, so colour it here instead
-        rich.print(f"[red]{error}[/red]")
+        rich.print(f"[red]{escape(str(error))}[/red]")
         raise Exit(code=1) from error
 
 
@@ -165,6 +188,9 @@ def setup(
     pyproject = root / "pyproject.toml"
 
     with _reported():
+        if _offers_migration(pyproject, non_interactive):
+            return migrate(c, project_dir=project_dir)
+
         config = Config.from_pyproject(root)
 
         if not non_interactive:
@@ -182,10 +208,216 @@ def setup(
             else:
                 config = Config.interactive(config, present_paths=present_paths)
 
-        _pin_branch(c, config, root)
-        config.write_to_pyproject(pyproject)
-        if changelog := config.active_changelog:
-            Changelog(settings=changelog, root=root).ensure()
+        _write_config(c, config, root, pyproject)
+
+
+def _write_config(c: Context, config: Config, root: Path, pyproject: Path) -> None:
+    """
+    The tail every setup path shares: pin the branch, write, make a changelog.
+    """
+    _pin_branch(c, config, root)
+    config.write_to_pyproject(pyproject)
+    if changelog := config.active_changelog:
+        Changelog(settings=changelog, root=root).ensure()
+
+
+@task()
+def migrate(
+    c: Context,
+    project_dir: str | None = None,
+    on_unsupported: str = "warn",
+    yes: bool = False,
+) -> None:
+    """
+    Bring a python-semantic-release v7 project across to vommit.
+
+    Reads `[tool.semantic_release]`, reports what does and does not survive the
+    translation, then asks whether to review the result, take it as-is, or stop.
+    Nothing is written before that answer, so a plain run doubles as a dry run.
+    Use --on-unsupported=error to refuse a config vommit cannot fully honour.
+    """
+    root = _project_root(project_dir)
+    pyproject = root / "pyproject.toml"
+
+    with _reported():
+        policy = parse_unsupported_policy(on_unsupported)
+
+        raw = read_psr(pyproject)
+        if raw is None:
+            raise VommitError(
+                f"no [{PSR_KEY}] in {pyproject}; there is nothing to migrate. "
+                f"Run `vommit setup` to configure from scratch."
+            )
+
+        migration = translate(raw)
+        _report_migration(migration.report, policy)
+
+        # planned before the first write, so a project this cannot migrate is
+        # refused whole rather than left with two live release configs
+        plan = plan_version_migration(
+            pyproject,
+            migration.version_files,
+            fallback=_last_released_version(c, migration.config, root),
+        )
+
+        config = _migrated_config(migration, yes)
+        if config is None:
+            rich.print("[yellow]Stopped; nothing was written.[/yellow]")
+            return
+
+        _write_config(c, config, root, pyproject)
+        rich.print(f"[green]Wrote[/green] {escape(f'[{TOML_KEY}]')} to {pyproject}")
+
+        _migrate_version(plan, root, pyproject, yes)
+        _migrate_cleanup(pyproject, yes)
+
+
+def _report_migration(report: MigrationReport, policy: UnsupportedPolicy) -> None:
+    for note in report.mapped:
+        rich.print(
+            f"  [green]+[/green] {escape(note.key)} [dim]->[/dim] {escape(note.detail)}"
+        )
+    for note in report.lossy:
+        rich.print(f"  [yellow]~[/yellow] {escape(note.key)}: {escape(note.detail)}")
+
+    if policy == "skip":
+        return
+
+    for note in report.unsupported:
+        rich.print(f"  [red]-[/red] {escape(note.key)}: {escape(note.detail)}")
+
+    if policy == "error" and report.unsupported:
+        raise VommitError(
+            f"{len(report.unsupported)} setting(s) have no vommit equivalent; "
+            f"--on-unsupported=error refuses to continue."
+        )
+
+
+def _migrated_config(migration: Migration, yes: bool) -> Config | None:
+    """
+    The config to write, or None when the answer was to write nothing.
+    """
+    choice = _migrate_choice(migration.report, yes)
+    if choice == "stop":
+        return None
+    if choice == "copy":
+        return migration.config
+    return Config.interactive(migration.config, present_paths=migration.key_paths)
+
+
+def _migrate_choice(report: MigrationReport, yes: bool) -> MigrateChoice:
+    """
+    Ask what to do with the translation; warnings tilt the default to review.
+    """
+    if yes:
+        return "copy"
+    if not sys.stdin.isatty():
+        rich.print(
+            "[yellow]No terminal to ask on; pass --yes to write the translated "
+            "config.[/yellow]"
+        )
+        return "stop"
+
+    default: MigrateChoice = "copy" if report.clean else "interactive"
+    question = (
+        "Everything came across. Write it?"
+        if report.clean
+        else f"{len(report.warnings)} setting(s) need a look. How do you want to go on?"
+    )
+    answer = questionary.select(
+        question,
+        choices=list(MIGRATE_CHOICES.values()),
+        default=MIGRATE_CHOICES[default],
+    ).ask()
+    return next(
+        (choice for choice, label in MIGRATE_CHOICES.items() if label == answer),
+        "stop",
+    )
+
+
+def _migrate_version(
+    plan: VersionPlan,
+    root: Path,
+    pyproject: Path,
+    yes: bool,
+) -> None:
+    """
+    Carry out the version half of the migration, once it has been agreed to.
+    """
+    if plan.empty:
+        return
+
+    for step in plan.steps:
+        rich.print(f"  [dim]-[/dim] {escape(step)}")
+    for note in plan.warnings:
+        rich.print(f"  [yellow]![/yellow] {escape(note.key)}: {escape(note.detail)}")
+
+    if not _confirm(plan.question, yes):
+        rich.print("[yellow]Left the version alone.[/yellow]")
+        return
+
+    if plan.transform:
+        apply_static_version(pyproject, plan.transform)
+    result = rewrite_version_files(plan.rewrites, root)
+
+    for path in result.changed:
+        rich.print(f"[green]Rewrote[/green] {escape(relative_path(path, root))}")
+    for note in result.skipped:
+        rich.print(
+            f"[yellow]Skipped {escape(note.key)}: {escape(note.detail)}[/yellow]"
+        )
+
+
+def _last_released_version(c: Context, config: Config, root: Path) -> str | None:
+    """
+    The version behind the most recent tag, as a fallback version source.
+    """
+    git = config.git
+    repo = GitRepo(runner=ContextRunner(c), root=root)
+    return config.tag_version(repo.last_tag(git.tag_glob if git else None))
+
+
+def _migrate_cleanup(pyproject: Path, yes: bool) -> None:
+    """
+    Two live release configs in one file is the state worth not leaving behind.
+    """
+    question = f"Remove [{PSR_KEY}] and the python-semantic-release dependency?"
+    if not _confirm(question, yes):
+        rich.print(f"[yellow]Left {escape(f'[{PSR_KEY}]')} in place.[/yellow]")
+        return
+
+    for removed in strip_psr(pyproject):
+        rich.print(f"[green]Removed[/green] {escape(removed)}")
+
+
+def _offers_migration(pyproject: Path, non_interactive: bool) -> bool:
+    """
+    Whether `setup` should hand over to `migrate` instead of starting blank.
+    """
+    if Config.has_pyproject_config(pyproject) or read_psr(pyproject) is None:
+        return False
+
+    rich.print(
+        f"[blue]Found a python-semantic-release config in {escape(str(pyproject))}.[/blue]"
+    )
+    if non_interactive:
+        rich.print("[blue]Run `vommit migrate` to bring it across.[/blue]")
+        return False
+    return _confirm("Migrate it instead of configuring from scratch?", yes=False)
+
+
+def _confirm(question: str, yes: bool, default: bool = True) -> bool:
+    """
+    Ask, unless there is nobody to ask or the answer was given up front.
+    """
+    if yes:
+        return True
+    if not sys.stdin.isatty():
+        rich.print(
+            f"[yellow]{escape(question)} No terminal to ask on; skipped.[/yellow]"
+        )
+        return False
+    return bool(questionary.confirm(question, default=default).ask())
 
 
 def _pin_branch(c: Context, config: Config, root: Path) -> None:
@@ -310,5 +542,4 @@ def release(
 
 
 # todo: 'init' to make a whole new project? = uv init + setup
-# todo: migrate from tool.semantic_release ; allow setting error/warn/skip on unexpected keys
 # todo: `vommit add` to add a dependency?
