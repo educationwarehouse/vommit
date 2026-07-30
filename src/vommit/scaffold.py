@@ -13,8 +13,6 @@ import sys
 import typing as t
 from pathlib import Path
 
-from tomlkit.container import Container
-
 from . import licenses
 from .errors import VommitError
 from .git import GitRepo
@@ -333,8 +331,8 @@ def declare_license(root: Path, license_id: str) -> bool:
 
     pyproject = root / PYPROJECT
     document = read_toml(pyproject)
-    project = document["project"]
-    if not isinstance(project, Container):
+    project = document.get("project")
+    if not isinstance(project, dict):
         raise VommitError("[project] must be a TOML table")
 
     project["license"] = license_id

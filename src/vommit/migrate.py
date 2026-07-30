@@ -6,7 +6,6 @@ import typing as t
 from pathlib import Path, PurePosixPath
 
 import tomlkit
-from tomlkit.container import Container
 
 from .commits import BREAKING, VersionBump
 from .config import DERIVE_BRANCH, ChangelogConfig, Config
@@ -136,6 +135,7 @@ PSR_DEFAULTS: dict[str, t.Any] = {
 # Read during translation, so never reported as unknown.
 HANDLED_KEYS = frozenset(PSR_DEFAULTS) | {
     "build_command",
+    "commit_author",
     "commit_message",
     "major_on_zero",
     "patch_without_tag",
@@ -151,8 +151,6 @@ UNSUPPORTED_KEYS: dict[str, str] = {
     "changelog_components": "the changelog is rendered by vommit itself",
     "changelog_scope": "scopes are always shown",
     "check_build_status": "vommit does not poll a CI provider",
-    # todo: let a project set the release commit author, and map this onto it
-    "commit_author": "release commits carry your own git identity",
     "commit_version_number": "vommit always commits the version bump",
     "dist_glob_patterns": "publishing is a plain shell command (commands.publish)",
     "fix_tag": "emoji parser setting",
@@ -612,6 +610,7 @@ def _refuse_unmigratable(raw: Raw) -> None:
 def _translate_git(work: _Translation) -> None:
     _translate_branch(work)
     work.assign("commit_subject", "git.commit_format", str(work.get("commit_subject")))
+    _translate_commit_author(work)
 
     if work.get("tag_commit"):
         work.assign("tag_format", "git.tag_format", str(work.get("tag_format")))
@@ -622,6 +621,23 @@ def _translate_git(work: _Translation) -> None:
             None,
             detail="tagging stays off (git.tag_format cleared)",
         )
+
+
+def _translate_commit_author(work: _Translation) -> None:
+    """
+    Carry an explicit `commit_author` across, and only an explicit one.
+
+    v7 fell back to `semantic-release <semantic-release>` in code rather than in
+    `defaults.cfg`, so it is absent from `PSR_DEFAULTS` on purpose: nobody chose
+    that identity, and vommit's own default -- the identity of whoever releases
+    -- is the one a project would have picked if v7 had asked.
+    """
+    if not work.is_explicit("commit_author"):
+        return
+
+    author = str(work.get("commit_author")).strip()
+    if author:
+        work.assign("commit_author", "git.commit_author", author)
 
 
 def _translate_branch(work: _Translation) -> None:
@@ -1051,8 +1067,8 @@ def apply_static_version(pyproject: Path, transform: VersionTransform) -> None:
     Carry out `transform`: static version in, `dynamic` and the hook table out.
     """
     document = read_toml(pyproject)
-    project = document["project"]
-    if not isinstance(project, Container):
+    project = document.get("project")
+    if not isinstance(project, dict):
         raise VommitError("[project] must be a TOML table")
 
     project["version"] = transform.version
