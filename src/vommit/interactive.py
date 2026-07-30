@@ -96,9 +96,7 @@ def _ask_for_value(
             auto_enter=False,
             qmark=">>",
             style=_PROMPT_STYLE,
-        ).ask()
-        if selected is None:
-            raise KeyboardInterrupt(f"Input cancelled for field '{field_name}'.")
+        ).unsafe_ask()
         return selected
 
     raw = questionary.text(
@@ -108,9 +106,7 @@ def _ask_for_value(
         default=f"{default} " if has_default else "",
         qmark=">>",
         style=_PROMPT_STYLE,
-    ).ask()
-    if raw is None:
-        raise KeyboardInterrupt(f"Input cancelled for field '{field_name}'.")
+    ).unsafe_ask()
     raw = (raw or "").strip()
 
     if raw == "":
@@ -146,9 +142,7 @@ def _select_literal(
         qmark=">>",
         pointer="=>",
         style=_PROMPT_STYLE,
-    ).ask()
-    if selected is None:
-        raise KeyboardInterrupt(f"Selection cancelled for field '{field_name}'.")
+    ).unsafe_ask()
     for choice in choices:
         if str(choice) == selected:
             return choice
@@ -391,6 +385,41 @@ class InteractiveConfig(TypedConfig):
     @classmethod
     def interactive_key_paths(cls) -> set[str]:
         return _interactive_key_paths(cls)
+
+
+class Prompts:
+    """
+    The `scaffold.Asker` protocol, asked on a real terminal.
+
+    `unsafe_ask` throughout, so ctrl-c raises `KeyboardInterrupt` and stops the
+    program. `ask` would swallow it and hand back None, which halfway through
+    creating a project means the remaining questions answer themselves and the
+    scaffold goes ahead on defaults nobody chose.
+    """
+
+    def text(self, question: str, default: str = "") -> str:
+        return str(
+            questionary.text(
+                f"{question}:", default=default, style=_PROMPT_STYLE
+            ).unsafe_ask()
+        )
+
+    def confirm(self, question: str, default: bool = True) -> bool:
+        return bool(
+            questionary.confirm(
+                question, default=default, style=_PROMPT_STYLE
+            ).unsafe_ask()
+        )
+
+    def choose(self, question: str, options: list[str], default: str) -> str:
+        return str(
+            questionary.select(
+                f"{question}:",
+                choices=options,
+                default=default if default in options else None,
+                style=_PROMPT_STYLE,
+            ).unsafe_ask()
+        )
 
 
 # class Example(TypedConfig, Interactive):

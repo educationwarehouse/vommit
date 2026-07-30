@@ -3,7 +3,6 @@
 # Entrypoints only: argument plumbing, output and error translation.
 # Anything with logic in it belongs in a module that can be tested without a Context.
 
-import shlex
 import sys
 import typing as t
 from contextlib import contextmanager
@@ -15,6 +14,7 @@ from ewok import Context, task
 from invoke import Exit
 from rich.markup import escape
 
+from . import licenses
 from .auth import (
     ENVIRONMENT,
     KEYRING,
@@ -31,6 +31,7 @@ from .config import DERIVE_BRANCH, TOML_KEY, Config
 from .errors import VommitError
 from .git import GitRepo
 from .helpers import relative_path
+from .interactive import Prompts
 from .migrate import (
     PSR_KEY,
     Migration,
@@ -38,6 +39,7 @@ from .migrate import (
     UnsupportedPolicy,
     VersionPlan,
     apply_static_version,
+    discover_version_files,
     parse_unsupported_policy,
     plan_version_migration,
     read_psr,
@@ -46,6 +48,17 @@ from .migrate import (
     translate,
 )
 from .release import ReleaseRequest, ReleaseResult, Step, run_release
+from .scaffold import (
+    DEFAULT_BRANCH,
+    DEFAULT_VENV,
+    NO_VENV,
+    Defaults,
+    ScaffoldRequest,
+    ScaffoldResult,
+    initial_commit_message,
+    plan_request,
+    run_scaffold,
+)
 from .shell import ContextRunner
 from .undo import UndoPlan, UndoResult, run_undo
 
@@ -70,10 +83,17 @@ def _reported() -> t.Iterator[None]:
         # Exit prints its message verbatim, so colour it here instead
         rich.print(f"[red]{escape(str(error))}[/red]")
         raise Exit(code=1) from error
+    except KeyboardInterrupt as interrupt:
+        # every prompt uses `unsafe_ask`, so ctrl-c arrives here rather than
+        # answering None and letting the command carry on with defaults
+        rich.print("[yellow]Interrupted.[/yellow]")
+        raise Exit(code=1) from interrupt
 
 
 def _notify(message: str) -> None:
-    rich.print(f"[blue]{message}[/blue]")
+    # escaped: these messages name things like [project].license, and rich would
+    # read the brackets as a style tag and swallow the word
+    rich.print(f"[blue]{escape(message)}[/blue]")
 
 
 def _project_root(project_dir: str | None) -> Path:
@@ -206,15 +226,127 @@ def _asker[ResultT](
         if not sys.stdin.isatty():
             rich.print(f"[yellow]{text} No terminal to ask on; pass --yes.[/yellow]")
             return False
-        return bool(questionary.confirm(text, default=True).ask())
+        return bool(questionary.confirm(text, default=True).unsafe_ask())
 
     return ask
 
 
-@task()
-def init(c: Context, project_name: str, non_interactive: bool = False):
-    c.run(f"uv init --package {shlex.quote(project_name)}")
-    return setup(c, non_interactive=non_interactive, project_dir=project_name)
+@task(
+    # long flags only: a dozen parameters here left invoke deriving short flags
+    # like `-y` for `--python`, and one collision produced a bare `--`
+    auto_shortflags=False,
+    help={
+        "project-name": "Directory and package name to create.",
+        "non-interactive": "Take every answer from the flags and defaults.",
+        "python": "Minimum Python version (default: the interpreter running vommit).",
+        "description": "Project description; omitted from pyproject.toml when empty.",
+        "license": f"SPDX identifier for [project].license, or '{licenses.NO_LICENSE}'.",
+        "branch": "Release branch (default: the one git creates).",
+        "remote": "URL to add as 'origin'.",
+        "message": "Initial commit message; pass an empty one to make no commit.",
+        "push": "Push the initial commit and set the upstream.",
+        "venv": f"Directory for the project's own environment, or '{NO_VENV}'.",
+        "pin-python": "Keep uv's .python-version file.",
+        "no-workspace": "Do not join an enclosing uv workspace.",
+    },
+)
+def init(
+    c: Context,
+    project_name: str,
+    non_interactive: bool = False,
+    python: str | None = None,
+    description: str | None = None,
+    license: str | None = None,
+    branch: str | None = None,
+    remote: str | None = None,
+    message: str | None = None,
+    push: bool = False,
+    venv: str = DEFAULT_VENV,
+    pin_python: bool = False,
+    no_workspace: bool = False,
+) -> None:
+    """
+    Create a new uv package, configure vommit in it, and make its first commit.
+
+    Asks for the Python floor, description, license, release branch, remote,
+    commit message and where the project's environment goes; every flag here
+    pre-fills its question, and `--non-interactive` takes the answers as given.
+    """
+    runner = ContextRunner(c)
+    with _reported():
+        defaults = ScaffoldRequest(
+            project_name=project_name,
+            python=python,
+            description=description,
+            license_id=license or licenses.DEFAULT_LICENSE,
+            branch=branch or DEFAULT_BRANCH,
+            pin_python=pin_python,
+            workspace=not no_workspace,
+            remote=remote,
+            commit_message=initial_commit_message(message),
+            push=push,
+            venv=None if venv.strip().lower() == NO_VENV else venv.strip(),
+        )
+        asker = Defaults() if non_interactive else Prompts()
+        cwd = Path.cwd()
+        request = plan_request(
+            defaults,
+            asker,
+            detected_branch=branch or _detected_branch(runner, cwd),
+        )
+        result = run_scaffold(
+            request,
+            runner=runner,
+            cwd=cwd,
+            configure=lambda root, settled: _configure_new(
+                c, root, settled, non_interactive
+            ),
+            notify=_notify,
+        )
+        _report_scaffold(result)
+
+
+def _detected_branch(runner: ContextRunner, cwd: Path) -> str:
+    """
+    The branch name a `git init` here would produce, for the prompt's default.
+    """
+    return GitRepo(runner=runner, root=cwd).main_branch_local() or DEFAULT_BRANCH
+
+
+def _configure_new(
+    c: Context,
+    root: Path,
+    branch: str,
+    non_interactive: bool,
+) -> None:
+    """
+    Write the vommit config into the project `init` just created.
+
+    The branch is handed over rather than left to be derived: `init` has already
+    renamed the checkout to it, and a remote whose HEAD names another branch
+    would otherwise win and configure a release from a branch nobody is on.
+    """
+    setup(c, non_interactive=non_interactive, project_dir=str(root), branch=branch)
+
+
+def _report_scaffold(result: ScaffoldResult) -> None:
+    rich.print(f"[green]Created[/green] {escape(str(result.root))}")
+    rich.print(f"  [dim]branch[/dim]  {escape(result.branch)}")
+    if result.license_id:
+        rich.print(
+            f"  [dim]license[/dim] {escape(result.license_id)} [dim](add a LICENSE file)[/dim]"
+        )
+    if result.remote:
+        rich.print(f"  [dim]remote[/dim]  {escape(result.remote)}")
+    if result.venv:
+        installed = "editable" if result.installed else "not installed"
+        rich.print(
+            f"  [dim]venv[/dim]    {escape(result.venv)} [dim]({installed})[/dim]"
+        )
+    if not result.committed:
+        rich.print("[yellow]No initial commit was made.[/yellow]")
+    if result.remote and not result.pushed:
+        rich.print("[blue]Nothing was pushed yet.[/blue]")
 
 
 @task()
@@ -223,15 +355,15 @@ def setup(
     non_interactive: bool = False,
     project_dir: str | None = None,
     mode: SetupMode = "missing",
+    branch: str | None = None,
 ) -> None:
     """
-    Init (default: interacitve ; allow --non-interactive with smart defaults):
-    - check for vommit config in pyproject.toml
-    - else: check for semantic-release < 8 config ; ask if user wants to migrate (tool.semantic_release; project.optional-dependencies.dev)
-    - else: interactively ask to setup (tool.vommit ; project.optional-dependencies.dev)
-    + ask if user wants to switch __about__ to `__version__ = version(__package__)`
-    + Extra option for initializing totally new project?
-    - uv init --package <name>
+    Create or complete the vommit config in this project's pyproject.toml.
+
+    Hands over to `migrate` when it finds a python-semantic-release v7 config
+    and nothing of vommit's own. `--mode=all` revisits every setting rather than
+    only the missing ones. `--branch` supplies the release branch that would
+    otherwise be derived from the remote or the checkout.
     """
     root = _project_root(project_dir)
     pyproject = root / "pyproject.toml"
@@ -257,14 +389,54 @@ def setup(
             else:
                 config = Config.interactive(config, present_paths=present_paths)
 
-        _write_config(c, config, root, pyproject)
+        _write_config(c, config, root, pyproject, branch)
+        _offer_version_files(root, pyproject, non_interactive)
 
 
-def _write_config(c: Context, config: Config, root: Path, pyproject: Path) -> None:
+def _offer_version_files(root: Path, pyproject: Path, non_interactive: bool) -> None:
+    """
+    Offer to stop this project writing its version down in two places.
+
+    A source file holding a literal is the version vommit does not bump: the
+    next release moves `[project].version` and leaves `__version__` behind.
+    Reading it from the installed metadata instead has one version again.
+    """
+    try:
+        plan = plan_version_migration(
+            pyproject, discover_version_files(root, pyproject)
+        )
+    except VommitError as error:
+        # the config is already written and works; the version shape is a
+        # separate problem, and naming it beats failing the whole command
+        rich.print(
+            f"[yellow]The version could not be made bumpable: "
+            f"{escape(str(error))}[/yellow]"
+        )
+        return
+
+    if plan.empty:
+        return
+
+    if non_interactive:
+        rich.print("[blue]Run `vommit setup` to fix how the version is stored:[/blue]")
+        for step in plan.steps:
+            rich.print(f"  [dim]-[/dim] {escape(step)}")
+        return
+
+    _apply_version_plan(plan, root, pyproject, yes=False)
+
+
+def _write_config(
+    c: Context,
+    config: Config,
+    root: Path,
+    pyproject: Path,
+    branch: str | None = None,
+) -> None:
     """
     The tail every setup path shares: pin the branch, write, make a changelog.
     """
-    _pin_branch(c, config, root)
+    _pin_branch(c, config, root, branch)
     config.write_to_pyproject(pyproject)
     if changelog := config.active_changelog:
         Changelog(settings=changelog, root=root).ensure()
@@ -317,7 +489,7 @@ def migrate(
         _write_config(c, config, root, pyproject)
         rich.print(f"[green]Wrote[/green] {escape(f'[{TOML_KEY}]')} to {pyproject}")
 
-        _migrate_version(plan, root, pyproject, yes)
+        _apply_version_plan(plan, root, pyproject, yes)
         _migrate_cleanup(pyproject, yes)
 
 
@@ -377,21 +549,24 @@ def _migrate_choice(report: MigrationReport, yes: bool) -> MigrateChoice:
         question,
         choices=list(MIGRATE_CHOICES.values()),
         default=MIGRATE_CHOICES[default],
-    ).ask()
+    ).unsafe_ask()
     return next(
         (choice for choice, label in MIGRATE_CHOICES.items() if label == answer),
         "stop",
     )
 
 
-def _migrate_version(
+def _apply_version_plan(
     plan: VersionPlan,
     root: Path,
     pyproject: Path,
     yes: bool,
 ) -> None:
     """
-    Carry out the version half of the migration, once it has been agreed to.
+    Carry out a version plan, once it has been agreed to.
+
+    Shared by `migrate`, which learns the files from v7's `version_variable`,
+    and `setup`, which finds them by convention.
     """
     if plan.empty:
         return
@@ -466,18 +641,29 @@ def _confirm(question: str, yes: bool, default: bool = True) -> bool:
             f"[yellow]{escape(question)} No terminal to ask on; skipped.[/yellow]"
         )
         return False
-    return bool(questionary.confirm(question, default=default).ask())
+    return bool(questionary.confirm(question, default=default).unsafe_ask())
 
 
-def _pin_branch(c: Context, config: Config, root: Path) -> None:
+def _pin_branch(
+    c: Context,
+    config: Config,
+    root: Path,
+    branch: str | None = None,
+) -> None:
     """
-    Write the detected branch rather than `<head>`, so later runs are explicit.
+    Write a concrete branch rather than `<head>`, so later runs are explicit.
+
+    A branch given by the caller wins over detection: it is the one this project
+    was just put on, and the remote's HEAD may well name a different one.
     """
     if not (git := config.active_git) or git.branch != DERIVE_BRANCH:
         return
-    repo = GitRepo(runner=ContextRunner(c), root=root)
-    if branch := repo.main_branch(git.origin):
+    if branch:
         git.branch = branch
+        return
+    repo = GitRepo(runner=ContextRunner(c), root=root)
+    if detected := repo.detect_release_branch(git.origin):
+        git.branch = detected
 
 
 @task()
@@ -668,7 +854,7 @@ def _ask_token(replacing: bool, storing: bool = True) -> str:
         )
     lead = "Replace the stored PyPI token" if replacing else "PyPI token"
     tail = "" if storing else ", used once and not stored"
-    answer = questionary.password(f"{lead} (input hidden{tail}):").ask()
+    answer = questionary.password(f"{lead} (input hidden{tail}):").unsafe_ask()
     if not answer:
         raise VommitError("No token entered.")
     return str(answer)
@@ -738,7 +924,3 @@ def release(
     if result.cancelled:
         raise Exit(code=1)
     return result.version
-
-
-# todo: 'init' to make a whole new project? = uv init + setup
-# todo: `vommit add` to add a dependency?
