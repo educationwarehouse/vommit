@@ -5,8 +5,8 @@
 Vommit automates version bumps, changelogs, Git releases, builds, and
 publishing for uv-based Python packages using Conventional Commits.
 
-Vommit requires Python 3.13 or newer, [uv](https://docs.astral.sh/uv/), and a
-static `[project].version` in `pyproject.toml`. Automatic version selection and
+Vommit requires Python 3.13 or newer, [uv](https://docs.astral.sh/uv/) 0.7 or
+newer, and a static `[project].version` in `pyproject.toml`. Automatic version selection and
 the default release workflow also expect a Git repository, but this can be
 disabled via config.
 
@@ -218,6 +218,7 @@ The most useful settings to revisit are:
 | `git.origin` | Select the remote to push to. |
 | `git.branch`, `git.on_wrong_branch` | Select the release branch and how to handle a mismatch. |
 | `git.tag_format`, `git.commit_format` | Format the release tag and commit message. An empty tag format disables tagging; a release needs a commit format when Git is enabled. |
+| `git.commit_author` | Author the release commit as `Name <email>` instead of as yourself. |
 | `changelog.enabled` | Turn off changelog updates. |
 | `changelog.file`, `changelog.levels` | Choose the changelog location and displayed commit groups. |
 | `changelog.placeholder`, `changelog.entry_title_format` | Match the insertion marker and format generated entries. |
