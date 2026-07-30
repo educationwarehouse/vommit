@@ -14,10 +14,11 @@ from src.vommit.scaffold import (
     FALLBACK_GITIGNORE,
     GITIGNORE,
     LICENSE_FILE,
-    NO_ENVIRONMENT,
+    ENVIRONMENT_VAR,
     REQUIRED_IGNORES,
     Defaults,
     ScaffoldRequest,
+    active_environment,
     default_python,
     ensure_gitignore,
     ignore,
@@ -186,9 +187,10 @@ def test_defaults_asker_hands_the_request_back_unchanged():
         remote="git@example.com:me/mypkg.git",
         commit_message="chore: start",
         push=True,
-        install=True,
+        environment="/envs/demo",
     )
-    assert plan_request(defaults, Defaults()) == defaults
+    # the environment is resolved outside `plan_request`, like the branch is
+    assert plan_request(defaults, Defaults(), environment="/envs/demo") == defaults
 
 
 def test_plan_request_uses_the_detected_branch_over_the_default():
@@ -282,12 +284,38 @@ def test_plan_request_offers_a_push_once_there_is_a_remote_and_a_commit():
     assert planned.push is True
 
 
-def test_plan_request_can_turn_the_install_off():
+def test_plan_request_does_not_ask_to_install_without_an_environment():
+    """
+    Nothing activated means nothing to offer: the question could only fail.
+    """
+    asker = ScriptedAsker()
+    planned = plan_request(ScaffoldRequest(project_name="mypkg"), asker)
+
+    assert planned.environment is None
+    assert not any("Install" in question for question in asker.asked)
+
+
+def test_plan_request_names_the_environment_it_offers():
+    """
+    The path is the point: `uv run vommit` sets VIRTUAL_ENV to vommit's own
+    environment, and seeing that path is what makes it an obvious no.
+    """
+    asker = ScriptedAsker({"Install mypkg into": True})
     planned = plan_request(
-        ScaffoldRequest(project_name="mypkg", install=True),
-        ScriptedAsker({"Install it": False}),
+        ScaffoldRequest(project_name="mypkg"), asker, environment="/envs/demo"
     )
-    assert planned.install is False
+
+    assert planned.environment == "/envs/demo"
+    assert "Install mypkg into /envs/demo?" in asker.asked
+
+
+def test_plan_request_can_decline_the_install():
+    planned = plan_request(
+        ScaffoldRequest(project_name="mypkg", environment="/envs/demo"),
+        ScriptedAsker({"Install mypkg into": False}),
+        environment="/envs/demo",
+    )
+    assert planned.environment is None
 
 
 # --- licenses ----------------------------------------------------------------
@@ -559,13 +587,26 @@ def test_run_scaffold_keeps_an_existing_origin(tmp_path):
     assert GitRepo(runner=LocalRunner(), root=root).remotes() == ["origin"]
 
 
-def test_run_scaffold_installs_into_the_active_environment(tmp_path):
+def test_active_environment_reads_the_variable_the_user_set():
+    assert active_environment({ENVIRONMENT_VAR: "/envs/demo"}) == "/envs/demo"
+
+
+@pytest.mark.parametrize("environ", [{}, {ENVIRONMENT_VAR: ""}])
+def test_active_environment_is_none_without_one(environ):
+    assert active_environment(environ) is None
+
+
+def test_run_scaffold_names_the_environment_to_uv(tmp_path):
+    """
+    `--python` settles the target, so uv resolves nothing: not VIRTUAL_ENV, not
+    CONDA_PREFIX, and no walking up the tree for a directory named `.venv`.
+    """
     root = tmp_path / "mypkg"
     runner = uv_init_faker(root)
     notes: list[str] = []
 
     result = run_scaffold(
-        ScaffoldRequest(project_name="mypkg", install=True),
+        ScaffoldRequest(project_name="mypkg", environment="/envs/demo"),
         runner=runner,
         cwd=tmp_path,
         configure=lambda _: None,
@@ -573,25 +614,29 @@ def test_run_scaffold_installs_into_the_active_environment(tmp_path):
     )
 
     assert result.installed is True
-    assert runner.ran(f"uv pip install --directory {root.resolve()} -e .")
+    assert runner.ran(
+        f"uv pip install --python /envs/demo --directory {root.resolve()} -e ."
+    )
     # `uv sync` would create a .venv and a uv.lock the project did not ask for
     assert not runner.ran("uv sync")
-    assert any("editable" in note for note in notes)
+    assert any("/envs/demo" in note for note in notes)
 
 
-def test_run_scaffold_says_so_when_no_environment_is_active(tmp_path):
+def test_run_scaffold_reports_a_failed_install_without_failing(tmp_path):
     """
-    The install runs last, after the commit and the push, so a missing
-    environment is worth reporting rather than failing the whole command.
+    The install runs last, after the commit and the push, so there is nothing
+    left to unwind and reporting beats raising.
     """
     root = tmp_path / "mypkg"
     runner = uv_init_faker(root)
-    runner.reply("uv pip install", returncode=2, stderr=f"error: {NO_ENVIRONMENT}")
+    runner.reply("uv pip install", returncode=1, stderr="no interpreter")
     notes: list[str] = []
 
     result = run_scaffold(
         ScaffoldRequest(
-            project_name="mypkg", commit_message="chore: initial commit", install=True
+            project_name="mypkg",
+            commit_message="chore: initial commit",
+            environment="/envs/demo",
         ),
         runner=runner,
         cwd=tmp_path,
@@ -601,28 +646,10 @@ def test_run_scaffold_says_so_when_no_environment_is_active(tmp_path):
 
     assert result.installed is False
     assert result.committed is True
-    assert any("No environment is active" in note for note in notes)
-
-
-def test_run_scaffold_reports_any_other_install_failure(tmp_path):
-    root = tmp_path / "mypkg"
-    runner = uv_init_faker(root)
-    runner.reply("uv pip install", returncode=1, stderr="no interpreter")
-    notes: list[str] = []
-
-    result = run_scaffold(
-        ScaffoldRequest(project_name="mypkg", install=True),
-        runner=runner,
-        cwd=tmp_path,
-        configure=lambda _: None,
-        notify=notes.append,
-    )
-
-    assert result.installed is False
     assert any("no interpreter" in note for note in notes)
 
 
-def test_run_scaffold_does_not_install_unless_asked(tmp_path):
+def test_run_scaffold_does_not_install_without_an_environment(tmp_path):
     runner = uv_init_faker(tmp_path / "mypkg")
 
     run_scaffold(

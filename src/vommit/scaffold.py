@@ -31,8 +31,8 @@ ORIGIN = "origin"
 DEFAULT_BRANCH = "main"
 DEFAULT_COMMIT_MESSAGE = "chore: initial commit"
 
-#: How uv says there is nowhere to install into; not a failure worth stopping for.
-NO_ENVIRONMENT = "No virtual environment found"
+#: The one signal that means "the user picked this environment".
+ENVIRONMENT_VAR = "VIRTUAL_ENV"
 
 #: What `.gitignore` has to say for a release not to commit its own build or a
 #: virtual environment. Checked against whatever is already there.
@@ -67,6 +67,20 @@ def ignore(_: str) -> None:
     """
     The default for callers with nowhere to report progress.
     """
+
+
+def active_environment(environ: t.Mapping[str, str]) -> str | None:
+    """
+    The environment the user activated, or None when they activated none.
+
+    Only `VIRTUAL_ENV`, which is set by `activate` and by `uv run` and by
+    nothing else. uv's own resolution would go on to read `CONDA_PREFIX` and
+    then hunt for a directory named `.venv` by walking up from the project --
+    which finds an enclosing project's environment without saying so, and misses
+    a `venv/` sitting right there. Neither is a choice anybody made, so the
+    target is settled here and passed to uv explicitly.
+    """
+    return environ.get(ENVIRONMENT_VAR) or None
 
 
 def default_python() -> str:
@@ -127,7 +141,8 @@ class ScaffoldRequest:
     remote: str | None = None
     commit_message: str | None = None
     push: bool = False
-    install: bool = False
+    #: The environment to install into; None leaves the project uninstalled.
+    environment: str | None = None
 
     def __post_init__(self) -> None:
         if not self.project_name.strip():
@@ -183,6 +198,7 @@ def plan_request(
     defaults: ScaffoldRequest,
     asker: Asker,
     detected_branch: str | None = None,
+    environment: str | None = None,
 ) -> ScaffoldRequest:
     """
     Ask what `uv init` and the git steps need, in the order they run.
@@ -232,10 +248,29 @@ def plan_request(
         remote=remote or None,
         commit_message=commit or None,
         push=push,
-        install=asker.confirm(
-            "Install it into the active environment?", defaults.install
-        ),
+        environment=_settle_environment(defaults, asker, environment),
     )
+
+
+def _settle_environment(
+    defaults: ScaffoldRequest,
+    asker: Asker,
+    environment: str | None,
+) -> str | None:
+    """
+    Where to install, asked by name rather than by description.
+
+    Nothing to install into means nothing to ask: the question would offer an
+    action that could only fail. Naming the path is the point -- `uv run vommit`
+    sets `VIRTUAL_ENV` to the environment vommit itself runs from, and seeing
+    that path is what makes it an obvious no.
+    """
+    if not environment:
+        return None
+    wanted = defaults.environment is not None
+    if asker.confirm(f"Install {defaults.project_name} into {environment}?", wanted):
+        return environment
+    return None
 
 
 def declare_license(root: Path, license_id: str) -> bool:
@@ -321,7 +356,8 @@ def run_scaffold(
         repo.push_upstream(ORIGIN, branch)
         notify(f"Pushed '{branch}' to {remote}.")
 
-    installed = _install(runner, root, notify) if request.install else False
+    environment = request.environment
+    installed = bool(environment) and _install(runner, root, environment, notify)
 
     declared = request.license_id
     return ScaffoldResult(
@@ -388,28 +424,38 @@ def _commit(
     return True
 
 
-def _install(runner: Runner, root: Path, notify: Notify) -> bool:
+def _install(runner: Runner, root: Path, environment: str, notify: Notify) -> bool:
     """
-    Install the new project into the environment that is already active.
+    Install the new project into `environment`, editable.
 
-    `uv pip install -e .` rather than `uv sync`, which would create a `.venv`
-    and a `uv.lock` inside a project that asked for neither.
+    `--python` names the target, so uv resolves nothing: no `VIRTUAL_ENV`, no
+    `CONDA_PREFIX`, no walking up the tree looking for a `.venv`. It overrides
+    all three.
 
-    Never fatal: this runs last, after the commit and the push, so the project
-    is already made and reporting beats unwinding nothing.
+    `uv pip install` rather than `uv sync`, which would create a `.venv` and a
+    `uv.lock` inside a project that asked for neither.
+
+    Never fatal: this runs last, after the commit and the push, so the project is
+    already made and reporting beats unwinding nothing.
     """
     result = runner.run(
-        shlex.join(["uv", "pip", "install", "--directory", str(root), "-e", "."])
-    )
-    if result.ok:
-        notify("Installed the project into the active environment, editable.")
-        return True
-
-    if NO_ENVIRONMENT in result.error:
-        notify(
-            "No environment is active, so the project was not installed. "
-            "Activate one and run `uv pip install -e .`."
+        shlex.join(
+            [
+                "uv",
+                "pip",
+                "install",
+                "--python",
+                environment,
+                "--directory",
+                str(root),
+                "-e",
+                ".",
+            ]
         )
-    else:
-        notify(f"Could not install the project: {result.error}")
-    return False
+    )
+    if not result.ok:
+        notify(f"Could not install into {environment}: {result.error}")
+        return False
+
+    notify(f"Installed into {environment}, editable.")
+    return True
