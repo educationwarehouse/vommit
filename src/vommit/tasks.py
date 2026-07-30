@@ -52,11 +52,10 @@ from .release import ReleaseRequest, ReleaseResult, Step, run_release
 from .scaffold import (
     DEFAULT_BRANCH,
     DEFAULT_COMMIT_MESSAGE,
-    ENVIRONMENT_VAR,
     Defaults,
     ScaffoldRequest,
     ScaffoldResult,
-    active_environment,
+    install_target,
     plan_request,
     run_scaffold,
 )
@@ -241,7 +240,7 @@ def _asker[ResultT](
         "remote": "URL to add as 'origin'.",
         "message": "Initial commit message; empty makes no commit.",
         "push": "Push the initial commit and set the upstream.",
-        "install": f"Install the project into ${ENVIRONMENT_VAR}, editable.",
+        "install": "Install the project into the activated environment, editable.",
         "pin-python": "Keep uv's .python-version file.",
         "no-workspace": "Do not join an enclosing uv workspace.",
     },
@@ -269,12 +268,9 @@ def init(
     `--non-interactive` takes the answers as given.
     """
     runner = ContextRunner(c)
-    environment = active_environment(os.environ)
-    if install and not environment:
-        _notify(
-            f"${ENVIRONMENT_VAR} is not set, so there is nowhere to install into; "
-            f"activate an environment first."
-        )
+    target = install_target(os.environ, sys.prefix)
+    if install and target.refused:
+        _notify(f"Not installing: {target.refused}.")
     with _reported():
         defaults = ScaffoldRequest(
             project_name=project_name,
@@ -287,7 +283,7 @@ def init(
             remote=remote,
             commit_message=message or DEFAULT_COMMIT_MESSAGE,
             push=push,
-            environment=environment if install else None,
+            environment=target.path if install else None,
         )
         asker = Defaults() if non_interactive else Prompts()
         cwd = Path.cwd()
@@ -295,7 +291,7 @@ def init(
             defaults,
             asker,
             detected_branch=branch or _detected_branch(runner, cwd),
-            environment=environment,
+            environment=target.path,
         )
         result = run_scaffold(
             request,

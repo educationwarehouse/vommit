@@ -69,18 +69,49 @@ def ignore(_: str) -> None:
     """
 
 
-def active_environment(environ: t.Mapping[str, str]) -> str | None:
+@dc.dataclass(frozen=True)
+class InstallTarget:
     """
-    The environment the user activated, or None when they activated none.
+    Where a new project can be installed, or why it cannot be.
 
-    Only `VIRTUAL_ENV`, which is set by `activate` and by `uv run` and by
-    nothing else. uv's own resolution would go on to read `CONDA_PREFIX` and
-    then hunt for a directory named `.venv` by walking up from the project --
-    which finds an enclosing project's environment without saying so, and misses
-    a `venv/` sitting right there. Neither is a choice anybody made, so the
-    target is settled here and passed to uv explicitly.
+    `refused` carries the reason so the caller can say it out loud; an absent
+    target that explains itself beats one that quietly does nothing.
     """
-    return environ.get(ENVIRONMENT_VAR) or None
+
+    path: str | None = None
+    refused: str = ""
+
+
+def install_target(environ: t.Mapping[str, str], own_prefix: str) -> InstallTarget:
+    """
+    The environment to install a new project into, decided here rather than by uv.
+
+    Only `VIRTUAL_ENV` counts, which is set by `activate` and by `uv run` and by
+    nothing else. uv's own resolution would go on to read `CONDA_PREFIX` and then
+    hunt for a directory named `.venv` by walking up from the project -- which
+    silently finds an enclosing project's environment, and misses a `venv/`
+    sitting right there. Neither is a choice anybody made.
+
+    `own_prefix` is where vommit itself is installed, and it is never the answer.
+    Working on vommit means having that environment activated, and every `vommit
+    init` run from such a shell would otherwise offer to install a brand new
+    unrelated package into vommit's own site-packages.
+    """
+    active = environ.get(ENVIRONMENT_VAR)
+    if not active:
+        return InstallTarget(refused=f"${ENVIRONMENT_VAR} is not set")
+    if _same_directory(active, own_prefix):
+        return InstallTarget(
+            refused=f"{active} is the environment vommit itself runs from"
+        )
+    return InstallTarget(path=active)
+
+
+def _same_directory(one: str, other: str) -> bool:
+    """
+    Whether two paths name the same place, symlinks and `..` included.
+    """
+    return Path(one).resolve() == Path(other).resolve()
 
 
 def default_python() -> str:

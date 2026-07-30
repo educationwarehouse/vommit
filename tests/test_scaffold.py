@@ -18,7 +18,7 @@ from src.vommit.scaffold import (
     REQUIRED_IGNORES,
     Defaults,
     ScaffoldRequest,
-    active_environment,
+    install_target,
     default_python,
     ensure_gitignore,
     ignore,
@@ -587,13 +587,56 @@ def test_run_scaffold_keeps_an_existing_origin(tmp_path):
     assert GitRepo(runner=LocalRunner(), root=root).remotes() == ["origin"]
 
 
-def test_active_environment_reads_the_variable_the_user_set():
-    assert active_environment({ENVIRONMENT_VAR: "/envs/demo"}) == "/envs/demo"
+def test_install_target_is_the_environment_the_user_activated(tmp_path):
+    active = tmp_path / "chosen"
+    target = install_target({ENVIRONMENT_VAR: str(active)}, str(tmp_path / "vommit"))
+
+    assert target.path == str(active)
+    assert target.refused == ""
 
 
 @pytest.mark.parametrize("environ", [{}, {ENVIRONMENT_VAR: ""}])
-def test_active_environment_is_none_without_one(environ):
-    assert active_environment(environ) is None
+def test_install_target_refuses_when_nothing_is_activated(environ):
+    target = install_target(environ, "/envs/vommit")
+
+    assert target.path is None
+    assert target.refused == f"${ENVIRONMENT_VAR} is not set"
+
+
+def test_install_target_never_offers_vommits_own_environment():
+    """
+    Working on vommit means having its environment activated, so every `init`
+    run from that shell would otherwise offer vommit's own site-packages.
+    """
+    own = "/home/robin/werk/EW/vommit/venv"
+    target = install_target({ENVIRONMENT_VAR: own}, own)
+
+    assert target.path is None
+    assert "vommit itself runs from" in target.refused
+
+
+def test_install_target_compares_paths_not_strings(tmp_path):
+    own = tmp_path / "vommit" / "venv"
+    own.mkdir(parents=True)
+    link = tmp_path / "linked"
+    link.symlink_to(own)
+
+    assert install_target({ENVIRONMENT_VAR: str(link)}, str(own)).path is None
+    assert install_target({ENVIRONMENT_VAR: f"{own}/."}, str(own)).path is None
+
+
+def test_install_target_still_offers_another_projects_environment(tmp_path):
+    """
+    A globally installed vommit with some project's environment activated is the
+    case this whole prompt exists for.
+    """
+    target = install_target(
+        {ENVIRONMENT_VAR: str(tmp_path / "someproject" / "venv")},
+        str(tmp_path / "tools" / "vommit"),
+    )
+
+    assert target.path is not None
+    assert target.refused == ""
 
 
 def test_run_scaffold_names_the_environment_to_uv(tmp_path):
