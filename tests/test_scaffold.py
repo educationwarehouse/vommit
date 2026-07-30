@@ -14,11 +14,11 @@ from src.vommit.scaffold import (
     FALLBACK_GITIGNORE,
     GITIGNORE,
     LICENSE_FILE,
-    ENVIRONMENT_VAR,
+    NO_VENV,
+    VENV_CHOICES,
     REQUIRED_IGNORES,
     Defaults,
     ScaffoldRequest,
-    install_target,
     default_python,
     ensure_gitignore,
     ignore,
@@ -187,10 +187,9 @@ def test_defaults_asker_hands_the_request_back_unchanged():
         remote="git@example.com:me/mypkg.git",
         commit_message="chore: start",
         push=True,
-        environment="/envs/demo",
+        venv="venv",
     )
-    # the environment is resolved outside `plan_request`, like the branch is
-    assert plan_request(defaults, Defaults(), environment="/envs/demo") == defaults
+    assert plan_request(defaults, Defaults()) == defaults
 
 
 def test_plan_request_uses_the_detected_branch_over_the_default():
@@ -284,38 +283,39 @@ def test_plan_request_offers_a_push_once_there_is_a_remote_and_a_commit():
     assert planned.push is True
 
 
-def test_plan_request_does_not_ask_to_install_without_an_environment():
+def test_plan_request_asks_for_the_venv_directory():
+    asker = ScriptedAsker({"Create a virtual environment?": ".venv"})
+    planned = plan_request(ScaffoldRequest(project_name="mypkg", venv="venv"), asker)
+
+    assert planned.venv == ".venv"
+    assert asker.asked["Create a virtual environment?"] == "venv"
+
+
+def test_plan_request_offers_none_as_a_choice():
     """
-    Nothing activated means nothing to offer: the question could only fail.
+    "none" has to be answerable, not merely absent from the offered names.
     """
+    assert NO_VENV in VENV_CHOICES
+
+    planned = plan_request(
+        ScaffoldRequest(project_name="mypkg", venv="venv"),
+        ScriptedAsker({"Create a virtual environment?": NO_VENV}),
+    )
+    assert planned.venv is None
+
+
+def test_plan_request_offers_none_when_the_flag_declined_one():
     asker = ScriptedAsker()
     planned = plan_request(ScaffoldRequest(project_name="mypkg"), asker)
 
-    assert planned.environment is None
-    assert not any("Install" in question for question in asker.asked)
+    assert asker.asked["Create a virtual environment?"] == NO_VENV
+    assert planned.venv is None
 
 
-def test_plan_request_names_the_environment_it_offers():
-    """
-    The path is the point: `uv run vommit` sets VIRTUAL_ENV to vommit's own
-    environment, and seeing that path is what makes it an obvious no.
-    """
-    asker = ScriptedAsker({"Install mypkg into": True})
-    planned = plan_request(
-        ScaffoldRequest(project_name="mypkg"), asker, environment="/envs/demo"
-    )
-
-    assert planned.environment == "/envs/demo"
-    assert "Install mypkg into /envs/demo?" in asker.asked
-
-
-def test_plan_request_can_decline_the_install():
-    planned = plan_request(
-        ScaffoldRequest(project_name="mypkg", environment="/envs/demo"),
-        ScriptedAsker({"Install mypkg into": False}),
-        environment="/envs/demo",
-    )
-    assert planned.environment is None
+def test_request_refuses_a_venv_outside_the_project():
+    for name in ["/tmp/elsewhere", "../sneaky", "nested/venv"]:
+        with pytest.raises(VommitError, match="plain directory name"):
+            ScaffoldRequest(project_name="mypkg", venv=name)
 
 
 # --- licenses ----------------------------------------------------------------
@@ -587,61 +587,9 @@ def test_run_scaffold_keeps_an_existing_origin(tmp_path):
     assert GitRepo(runner=LocalRunner(), root=root).remotes() == ["origin"]
 
 
-def test_install_target_is_the_environment_the_user_activated(tmp_path):
-    active = tmp_path / "chosen"
-    target = install_target({ENVIRONMENT_VAR: str(active)}, str(tmp_path / "vommit"))
-
-    assert target.path == str(active)
-    assert target.refused == ""
-
-
-@pytest.mark.parametrize("environ", [{}, {ENVIRONMENT_VAR: ""}])
-def test_install_target_refuses_when_nothing_is_activated(environ):
-    target = install_target(environ, "/envs/vommit")
-
-    assert target.path is None
-    assert target.refused == f"${ENVIRONMENT_VAR} is not set"
-
-
-def test_install_target_never_offers_vommits_own_environment():
+def test_run_scaffold_creates_the_venv_and_installs_into_it(tmp_path):
     """
-    Working on vommit means having its environment activated, so every `init`
-    run from that shell would otherwise offer vommit's own site-packages.
-    """
-    own = "/home/robin/werk/EW/vommit/venv"
-    target = install_target({ENVIRONMENT_VAR: own}, own)
-
-    assert target.path is None
-    assert "vommit itself runs from" in target.refused
-
-
-def test_install_target_compares_paths_not_strings(tmp_path):
-    own = tmp_path / "vommit" / "venv"
-    own.mkdir(parents=True)
-    link = tmp_path / "linked"
-    link.symlink_to(own)
-
-    assert install_target({ENVIRONMENT_VAR: str(link)}, str(own)).path is None
-    assert install_target({ENVIRONMENT_VAR: f"{own}/."}, str(own)).path is None
-
-
-def test_install_target_still_offers_another_projects_environment(tmp_path):
-    """
-    A globally installed vommit with some project's environment activated is the
-    case this whole prompt exists for.
-    """
-    target = install_target(
-        {ENVIRONMENT_VAR: str(tmp_path / "someproject" / "venv")},
-        str(tmp_path / "tools" / "vommit"),
-    )
-
-    assert target.path is not None
-    assert target.refused == ""
-
-
-def test_run_scaffold_names_the_environment_to_uv(tmp_path):
-    """
-    `--python` settles the target, so uv resolves nothing: not VIRTUAL_ENV, not
+    `--python` names the target, so uv resolves nothing: not VIRTUAL_ENV, not
     CONDA_PREFIX, and no walking up the tree for a directory named `.venv`.
     """
     root = tmp_path / "mypkg"
@@ -649,37 +597,76 @@ def test_run_scaffold_names_the_environment_to_uv(tmp_path):
     notes: list[str] = []
 
     result = run_scaffold(
-        ScaffoldRequest(project_name="mypkg", environment="/envs/demo"),
+        ScaffoldRequest(project_name="mypkg", venv="venv", python="3.13"),
         runner=runner,
         cwd=tmp_path,
         configure=lambda _: None,
         notify=notes.append,
     )
 
+    assert result.venv == "venv"
     assert result.installed is True
+    assert runner.ran(f"uv venv --directory {root.resolve()} --python 3.13 venv")
     assert runner.ran(
-        f"uv pip install --python /envs/demo --directory {root.resolve()} -e ."
+        f"uv pip install --python {root.resolve() / 'venv'} "
+        f"--directory {root.resolve()} -e ."
     )
-    # `uv sync` would create a .venv and a uv.lock the project did not ask for
+    # `uv sync` would write a uv.lock the project did not ask for
     assert not runner.ran("uv sync")
-    assert any("/envs/demo" in note for note in notes)
+    assert any("venv" in note for note in notes)
+
+
+def test_run_scaffold_makes_no_venv_when_none_was_asked_for(tmp_path):
+    runner = uv_init_faker(tmp_path / "mypkg")
+
+    result = run_scaffold(
+        ScaffoldRequest(project_name="mypkg"),
+        runner=runner,
+        cwd=tmp_path,
+        configure=lambda _: None,
+    )
+
+    assert result.venv is None
+    assert result.installed is False
+    assert not runner.ran("uv venv")
+    assert not runner.ran("uv pip install")
+
+
+def test_run_scaffold_skips_the_install_when_the_venv_fails(tmp_path):
+    root = tmp_path / "mypkg"
+    runner = uv_init_faker(root)
+    runner.reply("uv venv", returncode=1, stderr="no such interpreter")
+    notes: list[str] = []
+
+    result = run_scaffold(
+        ScaffoldRequest(project_name="mypkg", venv="venv"),
+        runner=runner,
+        cwd=tmp_path,
+        configure=lambda _: None,
+        notify=notes.append,
+    )
+
+    assert result.venv is None
+    assert result.installed is False
+    assert not runner.ran("uv pip install")
+    assert any("no such interpreter" in note for note in notes)
 
 
 def test_run_scaffold_reports_a_failed_install_without_failing(tmp_path):
     """
-    The install runs last, after the commit and the push, so there is nothing
-    left to unwind and reporting beats raising.
+    Both steps run after the commit and the push, so there is nothing left to
+    unwind and reporting beats raising.
     """
     root = tmp_path / "mypkg"
     runner = uv_init_faker(root)
-    runner.reply("uv pip install", returncode=1, stderr="no interpreter")
+    runner.reply("uv pip install", returncode=1, stderr="resolution failed")
     notes: list[str] = []
 
     result = run_scaffold(
         ScaffoldRequest(
             project_name="mypkg",
+            venv="venv",
             commit_message="chore: initial commit",
-            environment="/envs/demo",
         ),
         runner=runner,
         cwd=tmp_path,
@@ -687,22 +674,10 @@ def test_run_scaffold_reports_a_failed_install_without_failing(tmp_path):
         notify=notes.append,
     )
 
+    assert result.venv == "venv"
     assert result.installed is False
     assert result.committed is True
-    assert any("no interpreter" in note for note in notes)
-
-
-def test_run_scaffold_does_not_install_without_an_environment(tmp_path):
-    runner = uv_init_faker(tmp_path / "mypkg")
-
-    run_scaffold(
-        ScaffoldRequest(project_name="mypkg"),
-        runner=runner,
-        cwd=tmp_path,
-        configure=lambda _: None,
-    )
-
-    assert not runner.ran("uv pip install")
+    assert any("resolution failed" in note for note in notes)
 
 
 def test_run_scaffold_leaves_an_enclosing_repository_alone(tmp_path):

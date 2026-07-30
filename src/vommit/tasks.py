@@ -3,7 +3,6 @@
 # Entrypoints only: argument plumbing, output and error translation.
 # Anything with logic in it belongs in a module that can be tested without a Context.
 
-import os
 import sys
 import typing as t
 from contextlib import contextmanager
@@ -52,10 +51,11 @@ from .release import ReleaseRequest, ReleaseResult, Step, run_release
 from .scaffold import (
     DEFAULT_BRANCH,
     DEFAULT_COMMIT_MESSAGE,
+    DEFAULT_VENV,
+    NO_VENV,
     Defaults,
     ScaffoldRequest,
     ScaffoldResult,
-    install_target,
     plan_request,
     run_scaffold,
 )
@@ -240,7 +240,7 @@ def _asker[ResultT](
         "remote": "URL to add as 'origin'.",
         "message": "Initial commit message; empty makes no commit.",
         "push": "Push the initial commit and set the upstream.",
-        "install": "Install the project into the activated environment, editable.",
+        "venv": "Directory for the project's own environment, or '{}'.".format(NO_VENV),
         "pin-python": "Keep uv's .python-version file.",
         "no-workspace": "Do not join an enclosing uv workspace.",
     },
@@ -256,21 +256,18 @@ def init(
     remote: str | None = None,
     message: str | None = None,
     push: bool = False,
-    install: bool = False,
+    venv: str = DEFAULT_VENV,
     pin_python: bool = False,
     no_workspace: bool = False,
 ) -> None:
     """
     Create a new uv package, configure vommit in it, and make its first commit.
 
-    Asks for the Python floor, description, license, release branch, remote and
-    commit message; every flag here pre-fills its question, and
-    `--non-interactive` takes the answers as given.
+    Asks for the Python floor, description, license, release branch, remote,
+    commit message and where the project's environment goes; every flag here
+    pre-fills its question, and `--non-interactive` takes the answers as given.
     """
     runner = ContextRunner(c)
-    target = install_target(os.environ, sys.prefix)
-    if install and target.refused:
-        _notify(f"Not installing: {target.refused}.")
     with _reported():
         defaults = ScaffoldRequest(
             project_name=project_name,
@@ -283,7 +280,7 @@ def init(
             remote=remote,
             commit_message=message or DEFAULT_COMMIT_MESSAGE,
             push=push,
-            environment=target.path if install else None,
+            venv=None if venv.strip().lower() == NO_VENV else venv.strip(),
         )
         asker = Defaults() if non_interactive else Prompts()
         cwd = Path.cwd()
@@ -291,7 +288,6 @@ def init(
             defaults,
             asker,
             detected_branch=branch or _detected_branch(runner, cwd),
-            environment=target.path,
         )
         result = run_scaffold(
             request,
@@ -324,6 +320,9 @@ def _report_scaffold(result: ScaffoldResult) -> None:
         rich.print(f"  [dim]license[/dim] {escape(result.license_id)} [dim](add a LICENSE file)[/dim]")
     if result.remote:
         rich.print(f"  [dim]remote[/dim]  {escape(result.remote)}")
+    if result.venv:
+        installed = "editable" if result.installed else "not installed"
+        rich.print(f"  [dim]venv[/dim]    {escape(result.venv)} [dim]({installed})[/dim]")
     if not result.committed:
         rich.print("[yellow]No initial commit was made.[/yellow]")
     if result.remote and not result.pushed:

@@ -48,13 +48,13 @@ that is ready to release: one commit holding the whole scaffold, on a named
 branch, with a declared license and a changelog.
 
 It asks for the minimum Python version, a description, a license, the release
-branch, a Git remote, the first commit message, and whether to install the
-project. Every flag pre-fills its question, so `--non-interactive` takes the
-answers as given:
+branch, a Git remote, the first commit message, and where the project's
+virtual environment should go. Every flag pre-fills its question, so
+`--non-interactive` takes the answers as given:
 
 ```bash
 vommit init --project-name mypkg --non-interactive \
-    --python 3.13 --license MIT --branch main \
+    --python 3.13 --license MIT --branch main --venv .venv \
     --remote git@example.com:me/mypkg.git --push
 ```
 
@@ -67,7 +67,7 @@ vommit init --project-name mypkg --non-interactive \
 | `--remote URL` | Added as `origin` before the config is written, so the release branch is read from it rather than guessed |
 | `--message TEXT` | Initial commit message; empty makes no commit |
 | `--push` | Push that commit and record the upstream |
-| `--install` | Install the project into the active environment, editable |
+| `--venv NAME` | Directory for the project's environment (`venv`, `.venv`, or `none`) |
 | `--pin-python` | Keep uv's `.python-version`, which Vommit otherwise leaves out |
 | `--no-workspace` | Do not join an enclosing uv workspace |
 
@@ -80,11 +80,19 @@ For the license, Vommit records the SPDX identifier and nothing else. It writes
 no `LICENSE` file and no `license-files`: choosing and placing the text is yours
 to do, and the report says so once the project is made.
 
-`--install` runs `uv pip install -e .`, which installs into the environment that
-is already active. Nothing creates a `.venv` or a `uv.lock` inside the new
-project. With no environment active, Vommit says so and leaves the finished
-project alone rather than failing: the install is the last step, after the commit
-and the push.
+The environment is created inside the new project with `uv venv`, on the
+interpreter the project declares, and the project is installed into it with
+`uv pip install --python <that venv> -e .`. Answer `none` to skip both.
+
+`--python` names the target, so uv resolves nothing — not `VIRTUAL_ENV`, not
+`CONDA_PREFIX`, and no walking up the tree for a directory named `.venv`.
+Whatever your shell has activated is left alone, including Vommit's own
+environment.
+
+`uv venv` rather than `uv sync`, so no `uv.lock` is written: the environment is a
+place to work, not a resolution to keep in step with the repository. Both steps
+run last, after the commit and the push, and neither is fatal — a failure is
+reported and the finished project stands.
 
 Run inside an existing repository, `uv init` creates no repository of its own.
 Vommit then leaves that history, branch and remote alone, makes no commit, and
