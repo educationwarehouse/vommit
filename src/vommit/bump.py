@@ -205,7 +205,10 @@ def run_bump(
 
     tag = git.format_tag(next_version) if git else None
     commit_message = git.format_commit(next_version) if git else None
-    author = resolve_author(git.commit_author) if git else None
+    # guarded by the commit, like the tag check below: `commit_format = ""` is a
+    # supported bump that stages without committing, and refusing it over an
+    # author that is never passed to git would block it for no gain.
+    author = resolve_author(git.commit_author) if git and commit_message else None
 
     if git:
         if not request.allow_dirty:

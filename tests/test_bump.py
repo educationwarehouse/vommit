@@ -258,6 +258,24 @@ def test_a_malformed_commit_author_stops_before_the_version_changes(sandbox):
     assert sandbox.tags() == []
 
 
+def test_a_commit_free_bump_ignores_the_commit_author(sandbox):
+    """
+    `commit_format = ""` stages without committing, so there is no commit for an
+    author to land on and no reason to refuse one that will never be used --
+    left over from before committing was switched off, say.
+    """
+    sandbox.set_config("tool.vommit.git", commit_format="", commit_author="Bogus")
+    sandbox.commits("feat: something new")
+
+    result = bump(sandbox)
+
+    assert result is not None
+    assert result.commit_message is None
+    assert sandbox.log(1) == ["feat: something new"]
+    staged = sorted(line[3:] for line in sandbox.status())
+    assert staged == ["CHANGELOG.md", "pyproject.toml", "uv.lock"]
+
+
 def test_including_prereleases_keeps_the_window_at_the_last_tag(sandbox):
     sandbox.set_config("tool.vommit.changelog", include_prereleases=True)
     sandbox.commits("feat: something new")
