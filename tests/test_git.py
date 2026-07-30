@@ -439,3 +439,146 @@ def test_push_tag_sends_only_the_named_tag(sandbox):
 def test_push_tag_reports_a_failure(sandbox):
     with pytest.raises(VommitError, match="push tag 'v9.9.9'"):
         repo_of(sandbox).push_tag("origin", "v9.9.9")
+
+
+def bare(tmp_path: Path, branch: str = "main") -> GitRepo:
+    """
+    A repository with no commit yet: what `uv init` leaves behind.
+    """
+    runner = LocalRunner()
+    runner.run(f"git init --initial-branch={branch} {tmp_path}")
+    return GitRepo(runner=runner, root=tmp_path)
+
+
+def test_current_branch_before_the_first_commit(tmp_path):
+    """
+    Regression: `rev-parse --abbrev-ref HEAD` fails outright on an unborn
+    branch, which made every command in a freshly created project die with
+    git's "ambiguous argument 'HEAD'".
+    """
+    assert bare(tmp_path, "trunk").current_branch() == "trunk"
+
+
+def test_current_branch_on_a_detached_head(sandbox):
+    """
+    `symbolic-ref` cannot answer here, and this is what CI checkouts look like.
+    """
+    sandbox.git("checkout", "--detach")
+
+    assert repo_of(sandbox).current_branch() == "HEAD"
+
+
+def test_detect_release_branch_prefers_the_remote(sandbox):
+    sandbox.git("checkout", "-b", "feature/x")
+
+    # the checked-out branch is not the answer: someone running `setup` from a
+    # feature branch means to release from the project's main branch
+    assert repo_of(sandbox).detect_release_branch() == "main"
+
+
+def test_detect_release_branch_uses_the_checkout_without_a_remote(tmp_path):
+    assert bare(tmp_path, "trunk").detect_release_branch() == "trunk"
+
+
+def test_detect_release_branch_falls_back_to_the_git_default(tmp_path):
+    runner = (
+        FakeRunner()
+        .reply("ls-remote", returncode=1)
+        .reply("symbolic-ref", returncode=128)
+        .reply("init.defaultBranch", stdout="master")
+    )
+
+    assert GitRepo(runner=runner, root=tmp_path).detect_release_branch() == "master"
+
+
+def test_detect_release_branch_gives_up_cleanly(tmp_path):
+    runner = (
+        FakeRunner()
+        .reply("ls-remote", returncode=1)
+        .reply("symbolic-ref", returncode=128)
+        .reply("init.defaultBranch", stdout="")
+    )
+
+    assert GitRepo(runner=runner, root=tmp_path).detect_release_branch() is None
+
+
+def test_is_repo_root(tmp_path):
+    assert bare(tmp_path).is_repo_root() is True
+
+
+def test_is_repo_root_is_false_for_a_directory_inside_one(tmp_path):
+    """
+    `uv init` skips `git init` inside a repository, and the toplevel that
+    answers then belongs to somebody else.
+    """
+    repo = bare(tmp_path)
+    nested = tmp_path / "nested"
+    nested.mkdir()
+
+    assert GitRepo(runner=repo.runner, root=nested).is_repo_root() is False
+
+
+def test_is_repo_root_is_false_outside_a_repo(tmp_path):
+    assert GitRepo(runner=LocalRunner(), root=tmp_path).is_repo_root() is False
+
+
+def test_rename_branch_works_before_the_first_commit(tmp_path):
+    repo = bare(tmp_path, "master")
+
+    repo.rename_branch("main")
+
+    assert repo.current_branch() == "main"
+
+
+def test_rename_branch_reports_a_failure(tmp_path):
+    runner = FakeRunner().reply("branch -m", returncode=1, stderr="nope")
+
+    with pytest.raises(VommitError, match="rename the branch to 'main'"):
+        GitRepo(runner=runner, root=tmp_path).rename_branch("main")
+
+
+def test_remotes(sandbox):
+    assert repo_of(sandbox).remotes() == ["origin"]
+
+
+def test_remotes_is_empty_outside_a_repo(tmp_path):
+    assert GitRepo(runner=LocalRunner(), root=tmp_path).remotes() == []
+
+
+def test_add_remote(tmp_path):
+    repo = bare(tmp_path)
+
+    repo.add_remote("origin", "git@example.com:me/mypkg.git")
+
+    assert repo.remotes() == ["origin"]
+
+
+def test_add_remote_reports_a_failure(sandbox):
+    with pytest.raises(VommitError, match="add remote 'origin'"):
+        repo_of(sandbox).add_remote("origin", "git@example.com:me/mypkg.git")
+
+
+def test_push_upstream_records_the_upstream(sandbox):
+    sandbox.git("checkout", "-b", "release")
+
+    repo_of(sandbox).push_upstream("origin", "release")
+
+    assert repo_of(sandbox).ref_exists("origin/release")
+
+
+def test_push_upstream_reports_a_failure(sandbox):
+    with pytest.raises(VommitError, match="push 'nope' to 'origin'"):
+        repo_of(sandbox).push_upstream("origin", "nope")
+
+
+def test_ensure_up_to_date_skips_a_project_without_a_remote(tmp_path):
+    """
+    Regression: the fetch ran before anything checked the remote existed, so a
+    project with no remote yet could not bump at all.
+    """
+    repo = bare(tmp_path)
+    messages: list[str] = []
+
+    repo.ensure_up_to_date(GitConfig.load({}), "main", messages.append)
+
+    assert "No remote 'origin'" in messages[0]

@@ -34,7 +34,25 @@ class GitRepo:
             raise VommitError(f"Could not {action}: {result.error}")
         return result
 
+    def _symbolic_branch(self) -> str | None:
+        """
+        The branch HEAD names, or None when HEAD names a commit directly.
+
+        Answers on an unborn branch, where `rev-parse --abbrev-ref` fails
+        outright, and declines on a detached checkout, where it does not.
+        """
+        result = self._git("symbolic-ref", "--short", "HEAD")
+        return result.out if result.ok and result.out else None
+
     def current_branch(self) -> str:
+        """
+        The checked-out branch, also before the first commit.
+
+        Falls back to `rev-parse`, which answers 'HEAD' on the detached checkout
+        that CI hands us -- the one state a symbolic ref cannot describe.
+        """
+        if branch := self._symbolic_branch():
+            return branch
         return self._checked(
             "rev-parse", "--abbrev-ref", "HEAD", action="determine the current branch"
         ).out
@@ -56,6 +74,24 @@ class GitRepo:
         return (
             (remote and self.main_branch_upstream(origin))
             or (local and self.main_branch_local())
+            or None
+        )
+
+    def detect_release_branch(self, origin: str = "origin") -> str | None:
+        """
+        The branch to write into a fresh config, best answer first.
+
+        The remote's HEAD comes first because it is the only authoritative
+        answer to "which branch does this project release from"; asking the
+        checkout first would pin a feature branch for anyone who ran `setup`
+        from one. It is the checked-out branch that saves the case a remote
+        cannot: a repository created moments ago, where `init.defaultBranch` is
+        a guess about a branch that already has a name.
+        """
+        return (
+            self.main_branch_upstream(origin)
+            or self._symbolic_branch()
+            or self.main_branch_local()
             or None
         )
 
@@ -119,6 +155,11 @@ class GitRepo:
         """
         Refuse to release while the remote has commits we do not have.
         """
+        if git.origin not in self.remotes():
+            # nothing to be behind, and fetching would fail on the missing name
+            on_message(f"No remote '{git.origin}'; skipping the freshness check.")
+            return
+
         self._checked("fetch", git.origin, action=f"fetch from '{git.origin}'")
 
         upstream = f"{git.origin}/{branch}"
@@ -319,6 +360,51 @@ class GitRepo:
 
     def push(self, origin: str, branch: str) -> None:
         self._checked("push", origin, branch, action=f"push '{branch}' to '{origin}'")
+
+    def is_repo_root(self) -> bool:
+        """
+        Whether this directory is a repository of its own.
+
+        `uv init` skips `git init` inside an existing repository, which leaves a
+        new project sharing its parent's history: the toplevel then answers, but
+        it is somebody else's.
+        """
+        result = self._git("rev-parse", "--show-toplevel")
+        return result.ok and Path(result.out).resolve() == self.root.resolve()
+
+    def rename_branch(self, branch: str) -> None:
+        """
+        Rename the checked-out branch, which also works before the first commit.
+        """
+        self._checked("branch", "-m", branch, action=f"rename the branch to '{branch}'")
+
+    def remotes(self) -> list[str]:
+        """
+        The remotes this repository knows, by name.
+
+        Empty outside a repository as well as inside one without remotes: both
+        mean there is nothing to fetch from, which is all a caller asks.
+        """
+        result = self._git("remote")
+        return result.out.splitlines() if result.ok else []
+
+    def add_remote(self, name: str, url: str) -> None:
+        """
+        Point `name` at `url`, failing when the repository already has that name.
+        """
+        self._checked("remote", "add", name, url, action=f"add remote '{name}'")
+
+    def push_upstream(self, origin: str, branch: str) -> None:
+        """
+        Push and record the upstream, so later runs can compare against it.
+        """
+        self._checked(
+            "push",
+            "--set-upstream",
+            origin,
+            branch,
+            action=f"push '{branch}' to '{origin}'",
+        )
 
     def push_tag(self, origin: str, tag: str) -> None:
         """

@@ -37,6 +37,50 @@ To see all commands and options:
 vommit --help
 ```
 
+## Starting a new project
+
+```bash
+vommit init --project-name mypkg
+```
+
+Runs `uv init --package`, configures Vommit in the result, and leaves a project
+that is ready to release, with a named branch, declared license, changelog, and
+initial commit.
+
+The version starts at `0.0.0`, so the first `vommit bump` derives the first
+release from its commits: `0.1.0` for a feature or `0.0.1` for a fix.
+
+Each question it asks has a flag that pre-fills it, so `--non-interactive`
+takes the answers as given:
+
+```bash
+vommit init --project-name mypkg --non-interactive \
+    --python 3.13 --license MIT --branch main --venv .venv \
+    --remote git@example.com:me/mypkg.git --push
+```
+
+| Flag | Meaning |
+|---|---|
+| `--python VERSION` | Minimum Python version; defaults to the interpreter running Vommit |
+| `--description TEXT` | Omitted from `pyproject.toml` when empty |
+| `--license SPDX` | Records `[project].license`; add the `LICENSE` file yourself |
+| `--branch NAME` | Release branch |
+| `--remote URL` | Add as `origin` |
+| `--message TEXT` | Initial commit message; empty makes no commit |
+| `--push` | Push that commit and record the upstream |
+| `--venv NAME` | Directory for the project's environment (`venv`, `.venv`, or `none`) |
+| `--pin-python` | Keep uv's `.python-version` file |
+| `--no-workspace` | Do not join an enclosing uv workspace |
+
+The environment is created inside the new project and installed in editable
+mode. Creating it (and installing) runs last and is never fatal: if it fails,
+the project is already made, so create it later with `uv venv` yourself.
+
+Run inside an existing repository, `uv init` creates no repository of its own.
+Vommit then leaves that history, branch and remote alone, makes no commit, and
+writes the `.gitignore` uv skipped — without it a release would commit its own
+`dist/`.
+
 ## Releasing
 
 ```bash
@@ -151,8 +195,16 @@ are included when the next stable release is made. Set
 
 Run `vommit setup` to create or complete `[tool.vommit]` interactively; use
 `vommit setup --mode=all` to revisit every setting, or
-`vommit setup --non-interactive` for defaults. `vommit init --project-name NAME`
-creates and configures a new uv package.
+`vommit setup --non-interactive` for defaults. For a project that does not exist
+yet, `vommit init` runs `uv init` first.
+
+### Where the version lives
+
+`setup` detects a literal version in common package files alongside
+`[project].version` and offers to consolidate it, so releases do not leave a
+second version behind. It offers the same fix for `dynamic = ["version"]`, which
+must be frozen before Vommit can bump it. Nothing is rewritten without being
+asked; `vommit setup --non-interactive` prints the proposed change and stops.
 
 The most useful settings to revisit are:
 
