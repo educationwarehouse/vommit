@@ -13,8 +13,8 @@ requires-python = ">=3.13"
 # versions vommit is known to work against, not the oldest that might.
 dependencies = [
     "configuraptor >= 2.5.4, < 3",
-    # 0.x: a minor is a major, and App() failing to construct means no CLI at all
-    "ewok >= 0.5.2, < 0.6",
+    # pre-1.0, but breaking changes go in a major, so a minor is safe to take
+    "ewok >= 0.5.2, < 1",
     "keyring >= 25, < 26",
     "packaging >= 24, < 27",
     "questionary >= 2, < 3",
