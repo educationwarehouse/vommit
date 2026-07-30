@@ -218,6 +218,7 @@ The most useful settings to revisit are:
 | `git.origin` | Select the remote to push to. |
 | `git.branch`, `git.on_wrong_branch` | Select the release branch and how to handle a mismatch. |
 | `git.tag_format`, `git.commit_format` | Format the release tag and commit message. An empty tag format disables tagging; a release needs a commit format when Git is enabled. |
+| `git.commit_author` | Author the release commit as `Name <email>` instead of as yourself. |
 | `changelog.enabled` | Turn off changelog updates. |
 | `changelog.file`, `changelog.levels` | Choose the changelog location and displayed commit groups. |
 | `changelog.placeholder`, `changelog.entry_title_format` | Match the insertion marker and format generated entries. |

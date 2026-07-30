@@ -110,6 +110,16 @@ class GitConfig(TypedConfig, Defaultable):
         str | None, "Git commit message format (empty to disable)"
     ] = "{version}"
 
+    # Empty: the release commit is authored by whoever runs it, per git's config.
+    # Not asked for: that answer suits nearly every project, and making it a
+    # question would put it in `interactive_key_paths`, where every already
+    # configured project would count as incomplete until it answered.
+    commit_author: t.Annotated[
+        str | None,
+        "Release commit author as 'Name <email>' (empty for your own)",
+        {"interactive": False},
+    ] = None
+
     def format_tag(self, version: str) -> str | None:
         """
         None when tagging is switched off (empty or missing `tag_format`).

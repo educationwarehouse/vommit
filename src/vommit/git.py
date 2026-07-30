@@ -12,6 +12,27 @@ from .versioning import is_prerelease
 
 RE_HEAD = re.compile(r"refs/heads/(\S+)")
 
+# what `git commit --author` accepts: a name, then an address in angle brackets
+RE_AUTHOR = re.compile(r"^[^<>]+<[^<>]*>$")
+
+
+def resolve_author(author: str | None) -> str | None:
+    """
+    `git.commit_author` as `--author` takes it, or None to leave it to git.
+
+    Checked before the bump writes anything: git rejects a malformed author at
+    commit time, which is after the version has been changed and staged.
+    """
+    author = (author or "").strip()
+    if not author:
+        return None
+    if not RE_AUTHOR.fullmatch(author):
+        raise VommitError(
+            f"git.commit_author is {author!r}; git takes 'Name <email>'. "
+            "Leave it empty to commit as yourself."
+        )
+    return author
+
 
 @dc.dataclass(frozen=True)
 class GitRepo:
@@ -347,8 +368,11 @@ class GitRepo:
         if targets:
             self._checked("reset", "--quiet", "--", *targets, action="unstage")
 
-    def commit(self, message: str) -> None:
-        self._checked("commit", "-m", message, action="create the release commit")
+    def commit(self, message: str, author: str | None = None) -> None:
+        extra = [f"--author={author}"] if author else []
+        self._checked(
+            "commit", "-m", message, *extra, action="create the release commit"
+        )
 
     def ensure_tag_available(self, name: str) -> None:
         if self.ref_exists(f"refs/tags/{name}"):

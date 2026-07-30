@@ -10,6 +10,7 @@ from src.vommit.git import (
     find_main_branch_local,
     find_main_branch_upstream,
     here,
+    resolve_author,
 )
 from src.vommit.shell import LocalRunner
 
@@ -226,6 +227,63 @@ def test_add_commit_and_tag(sandbox):
     assert sandbox.log(1) == ["1.0.0"]
     assert sandbox.tags() == ["v1.0.0"]
     assert sandbox.status() == []
+
+
+def test_commit_can_carry_a_configured_author(sandbox):
+    """
+    `--author` names who wrote it; the committer stays whoever ran the release,
+    which is what git records and what a signature would cover.
+    """
+    sandbox.write("CHANGELOG.md", "# Changelog\n")
+    repo = repo_of(sandbox)
+
+    repo.add(["CHANGELOG.md"])
+    repo.commit("1.0.0", "Release Bot <bot@example.com>")
+
+    assert sandbox.git("log", "-1", "--format=%an <%ae>").out == (
+        "Release Bot <bot@example.com>"
+    )
+    assert (
+        sandbox.git("log", "-1", "--format=%cn <%ce>").out == "test <test@example.com>"
+    )
+
+
+def test_commit_without_an_author_stays_with_the_committer(sandbox):
+    sandbox.write("CHANGELOG.md", "# Changelog\n")
+    repo = repo_of(sandbox)
+
+    repo.add(["CHANGELOG.md"])
+    repo.commit("1.0.0")
+
+    assert (
+        sandbox.git("log", "-1", "--format=%an <%ae>").out == "test <test@example.com>"
+    )
+    assert "--author" not in sandbox.git("log", "-1", "--format=%s").out
+
+
+@pytest.mark.parametrize(
+    "configured,expected",
+    [
+        (None, None),
+        ("", None),
+        ("   ", None),
+        ("Bot <bot@example.com>", "Bot <bot@example.com>"),
+        ("  Bot <bot@example.com>  ", "Bot <bot@example.com>"),
+        ("Bot <>", "Bot <>"),
+    ],
+)
+def test_resolve_author_accepts_what_git_accepts(configured, expected):
+    assert resolve_author(configured) == expected
+
+
+@pytest.mark.parametrize("configured", ["Bot", "bot@example.com", "Bot <a> <b>", "<a>"])
+def test_resolve_author_refuses_what_git_would_reject(configured):
+    """
+    Refused before the bump writes anything: git only rejects it at commit time,
+    by which point the version is changed and staged.
+    """
+    with pytest.raises(VommitError, match="git takes 'Name <email>'"):
+        resolve_author(configured)
 
 
 def test_add_with_nothing_to_stage_is_a_no_op(sandbox):

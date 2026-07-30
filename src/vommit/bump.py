@@ -7,7 +7,7 @@ from .changelog import Changelog, ChangelogUpdate
 from .commits import VersionBump, highest_version_bump
 from .config import Config
 from .errors import VommitError
-from .git import GitRepo
+from .git import GitRepo, resolve_author
 from .helpers import relative_path
 from .shell import Runner
 from .versioning import UvProject, is_prerelease, plan_bump
@@ -205,6 +205,7 @@ def run_bump(
 
     tag = git.format_tag(next_version) if git else None
     commit_message = git.format_commit(next_version) if git else None
+    author = resolve_author(git.commit_author) if git else None
 
     if git:
         if not request.allow_dirty:
@@ -252,16 +253,18 @@ def run_bump(
                 f"take {next_version} back."
             ) from error
         if commit_message:
-            _commit(repo, commit_message, next_version)
+            _commit(repo, commit_message, next_version, author)
         if tag:
             repo.tag(tag)
 
     return result
 
 
-def _commit(repo: GitRepo, message: str, version: str) -> None:
+def _commit(
+    repo: GitRepo, message: str, version: str, author: str | None = None
+) -> None:
     try:
-        repo.commit(message)
+        repo.commit(message, author)
     except VommitError as error:
         # the version is already written by now; say where that leaves things
         raise VommitError(

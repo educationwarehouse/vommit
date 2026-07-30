@@ -1044,20 +1044,46 @@ def test_an_unrecognised_unsupported_policy_is_refused(policy):
 @pytest.mark.parametrize(
     "key,fragment",
     [
-        ("commit_author", "your own git identity"),
         ("repository_url", "commands.publish"),
         ("upload_to_pypi_glob_patterns", "commands.publish"),
     ],
 )
 def test_real_v7_keys_are_not_mistaken_for_typos(tmp_path, key, fragment):
     """
-    All three are genuine v7 settings; reporting them as misspellings hides a
-    real loss behind a did-you-mean.
+    Both are genuine v7 settings; reporting them as misspellings hides a real
+    loss behind a did-you-mean.
     """
     detail = notes(translate(psr(tmp_path, f"{key} = 'x'\n")).report.unsupported)[key]
 
     assert fragment in detail
     assert "Did you mean" not in detail
+
+
+def test_an_explicit_commit_author_comes_across(tmp_path):
+    migration = translate(psr(tmp_path, "commit_author = 'Bot <bot@example.com>'\n"))
+
+    assert migration.config.git.commit_author == "Bot <bot@example.com>"
+    assert "git.commit_author" in migration.key_paths
+    assert "commit_author" in notes(migration.report.mapped)
+
+
+@pytest.mark.parametrize("body", ["", "commit_author = ''\n", "commit_author = '  '\n"])
+def test_an_unset_commit_author_leaves_the_releaser_as_the_author(tmp_path, body):
+    """
+    v7's fallback identity lives in its code rather than in `defaults.cfg`, so
+    nobody chose it and it is not a setting to preserve.
+    """
+    migration = translate(psr(tmp_path, body))
+
+    assert migration.config.git.commit_author is None
+    assert "git.commit_author" not in migration.key_paths
+
+
+def test_commit_author_is_no_longer_reported_as_unsupported(tmp_path):
+    report = translate(psr(tmp_path, "commit_author = 'Bot <bot@example.com>'\n")).report
+
+    assert "commit_author" not in notes(report.unsupported)
+    assert "commit_author" not in notes(report.lossy)
 
 
 def test_stripping_endow(tmp_path):

@@ -231,6 +231,33 @@ def test_including_prereleases_gives_each_one_its_own_entry(sandbox):
     assert result.entry is not None
 
 
+def test_a_configured_commit_author_reaches_the_release_commit(sandbox):
+    sandbox.set_config("tool.vommit.git", commit_author="Release Bot <bot@example.com>")
+    sandbox.commits("feat: something new")
+
+    bump(sandbox)
+
+    assert sandbox.git("log", "-1", "--format=%an <%ae>").out == (
+        "Release Bot <bot@example.com>"
+    )
+
+
+def test_a_malformed_commit_author_stops_before_the_version_changes(sandbox):
+    """
+    The check has to come first: git only refuses the author at commit time,
+    which is after `uv version` has rewritten pyproject.toml.
+    """
+    sandbox.set_config("tool.vommit.git", commit_author="Release Bot")
+    sandbox.commits("feat: something new")
+    before = (sandbox.work / "pyproject.toml").read_text()
+
+    with pytest.raises(VommitError, match="git takes 'Name <email>'"):
+        bump(sandbox)
+
+    assert (sandbox.work / "pyproject.toml").read_text() == before
+    assert sandbox.tags() == []
+
+
 def test_including_prereleases_keeps_the_window_at_the_last_tag(sandbox):
     sandbox.set_config("tool.vommit.changelog", include_prereleases=True)
     sandbox.commits("feat: something new")
