@@ -45,11 +45,12 @@ vommit init --project-name mypkg
 
 Runs `uv init --package`, configures Vommit in the result, and leaves a project
 that is ready to release: one commit holding the whole scaffold, on a named
-branch, with a license and a changelog.
+branch, with a declared license and a changelog.
 
 It asks for the minimum Python version, a description, a license, the release
-branch, a Git remote and the first commit message. Every flag pre-fills its
-question, so `--non-interactive` takes the answers as given:
+branch, a Git remote, the first commit message, and whether to install the
+project. Every flag pre-fills its question, so `--non-interactive` takes the
+answers as given:
 
 ```bash
 vommit init --project-name mypkg --non-interactive \
@@ -61,12 +62,12 @@ vommit init --project-name mypkg --non-interactive \
 |---|---|
 | `--python VERSION` | Minimum Python version; defaults to the interpreter running Vommit |
 | `--description TEXT` | Left out of `pyproject.toml` entirely when empty, rather than carrying uv's placeholder to PyPI |
-| `--license SPDX` | Writes `LICENSE`, `[project].license` and `license-files`; `none` writes neither |
+| `--license SPDX` | Records `[project].license`; the `LICENSE` file itself stays yours to add |
 | `--branch NAME` | Release branch; renames the one Git created when they differ |
 | `--remote URL` | Added as `origin` before the config is written, so the release branch is read from it rather than guessed |
 | `--message TEXT` | Initial commit message; empty makes no commit |
 | `--push` | Push that commit and record the upstream |
-| `--no-sync` | Skip `uv sync`, leaving no `.venv` or `uv.lock` |
+| `--install` | Install the project into the active environment, editable |
 | `--pin-python` | Keep uv's `.python-version`, which Vommit otherwise leaves out |
 | `--no-workspace` | Do not join an enclosing uv workspace |
 
@@ -75,10 +76,15 @@ on `PATH`, and a file naming the wrong one quietly holds `uv run` back.
 `--python` sets `requires-python` instead, which is the constraint that belongs
 in the package.
 
-Licenses Vommit carries the text for are MIT, ISC, BSD-2-Clause and
-BSD-3-Clause. Any other SPDX identifier is still recorded in
-`[project].license`, but writing the text is left to you: `license-files` would
-otherwise point at a file that is not there.
+For the license, Vommit records the SPDX identifier and nothing else. It writes
+no `LICENSE` file and no `license-files`: choosing and placing the text is yours
+to do, and the report says so once the project is made.
+
+`--install` runs `uv pip install -e .`, which installs into the environment that
+is already active. Nothing creates a `.venv` or a `uv.lock` inside the new
+project. With no environment active, Vommit says so and leaves the finished
+project alone rather than failing: the install is the last step, after the commit
+and the push.
 
 Run inside an existing repository, `uv init` creates no repository of its own.
 Vommit then leaves that history, branch and remote alone, makes no commit, and
@@ -211,14 +217,8 @@ Only with neither does it fall back to `init.defaultBranch`.
 `setup` also looks for a version written down twice. A literal in
 `__about__.py`, `_version.py`, `version.py` or `__init__.py` is a version Vommit
 does not bump: the next release moves `[project].version` and leaves
-`__version__` behind. It offers to read it from the installed metadata instead,
-so there is one version again:
-
-```python
-from importlib.metadata import version
-
-__version__ = version(__package__)
-```
+`__version__` behind. It offers to read it from the installed metadata instead —
+the same rewrite the migration below performs — so there is one version again.
 
 A project declaring `dynamic = ["version"]` gets the same offer plus the freeze
 it needs, because `uv version` — which every bump goes through — refuses a

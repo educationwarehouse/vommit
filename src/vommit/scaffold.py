@@ -8,7 +8,6 @@ one commit holds the whole scaffold.
 """
 
 import dataclasses as dc
-import datetime as dt
 import shlex
 import sys
 import typing as t
@@ -32,7 +31,23 @@ ORIGIN = "origin"
 DEFAULT_BRANCH = "main"
 DEFAULT_COMMIT_MESSAGE = "chore: initial commit"
 
-#: What `.gitignore` needs to say for a release not to commit its own build.
+#: How uv says there is nowhere to install into; not a failure worth stopping for.
+NO_ENVIRONMENT = "No virtual environment found"
+
+#: What `.gitignore` has to say for a release not to commit its own build or a
+#: virtual environment. Checked against whatever is already there.
+REQUIRED_IGNORES: list[str] = [
+    "__pycache__/",
+    "*.py[oc]",
+    "build/",
+    "dist/",
+    "wheels/",
+    "*.egg-info",
+    ".venv",
+    "venv/",
+]
+
+#: Written whole when there is no `.gitignore` at all.
 FALLBACK_GITIGNORE = """\
 # Python-generated files
 __pycache__/
@@ -44,6 +59,7 @@ wheels/
 
 # Virtual environments
 .venv
+venv/
 """
 
 
@@ -111,7 +127,7 @@ class ScaffoldRequest:
     remote: str | None = None
     commit_message: str | None = None
     push: bool = False
-    sync: bool = False
+    install: bool = False
 
     def __post_init__(self) -> None:
         if not self.project_name.strip():
@@ -136,7 +152,7 @@ class ScaffoldResult:
     remote: str | None = None
     committed: bool = False
     pushed: bool = False
-    synced: bool = False
+    installed: bool = False
 
 
 def uv_init_argv(request: ScaffoldRequest, root: Path) -> list[str]:
@@ -216,61 +232,52 @@ def plan_request(
         remote=remote or None,
         commit_message=commit or None,
         push=push,
-        sync=asker.confirm("Run `uv sync` when it is set up?", defaults.sync),
+        install=asker.confirm(
+            "Install it into the active environment?", defaults.install
+        ),
     )
 
 
-def copyright_holder(root: Path, fallback: str) -> str:
+def declare_license(root: Path, license_id: str) -> bool:
     """
-    The name `uv init` filled in from git, for the license text.
-    """
-    pyproject = root / PYPROJECT
-    if not pyproject.exists():  # pragma: no cover - uv wrote it or we stopped
-        return fallback
-    authors = read_toml(pyproject).get("project", {}).get("authors") or []
-    for author in authors:
-        if name := str(author.get("name", "")).strip():
-            return name
-    return fallback
+    Record the chosen license in `[project].license`, and nothing else.
 
-
-def write_license(root: Path, license_id: str, year: int) -> bool:
-    """
-    Write the LICENSE file and the metadata that points at it.
-
-    Returns whether a text was written: an identifier we do not carry still
-    lands in `[project].license`, but claiming `license-files` without the file
-    would break the build.
+    `license-files` stays out: it would have to name a LICENSE file, and writing
+    that file means carrying license texts, which is the author's call to make
+    rather than ours to embed.
     """
     if license_id in {licenses.NO_LICENSE, ""}:
         return False
-
-    text = licenses.render(license_id, copyright_holder(root, "the authors"), year)
-    if text:
-        (root / LICENSE_FILE).write_text(text)
 
     pyproject = root / PYPROJECT
     document = read_toml(pyproject)
     project = document["project"]
     project["license"] = license_id  # type: ignore[index]
-    if text:
-        project["license-files"] = [LICENSE_FILE]  # type: ignore[index]
     pyproject.write_text(document.as_string())
-    return bool(text)
+    return True
 
 
-def ensure_gitignore(root: Path) -> bool:
+def ensure_gitignore(root: Path) -> list[str]:
     """
-    Make sure build output is ignored, which uv only does when it inits git.
+    Make sure build output and environments are ignored, and say what was added.
 
-    Without this, `init` inside an existing repository leaves a project whose
-    release would commit its own `dist/`.
+    uv writes a `.gitignore` only when it inits git, so inside an existing
+    repository there is none and a release would commit its own `dist/`. The one
+    uv does write is missing `venv/`, so an existing file is topped up rather
+    than trusted; everything already in it is left as it stands.
     """
     path = root / GITIGNORE
-    if path.exists():
-        return False
-    path.write_text(FALLBACK_GITIGNORE)
-    return True
+    if not path.exists():
+        path.write_text(FALLBACK_GITIGNORE)
+        return REQUIRED_IGNORES
+
+    present = set(path.read_text().splitlines())
+    missing = [entry for entry in REQUIRED_IGNORES if entry not in present]
+    if missing:
+        existing = path.read_text()
+        separator = "" if existing.endswith("\n") else "\n"
+        path.write_text(existing + separator + "\n".join(missing) + "\n")
+    return missing
 
 
 def run_scaffold(
@@ -279,7 +286,6 @@ def run_scaffold(
     cwd: Path,
     configure: Configure,
     notify: Notify = ignore,
-    today: dt.date | None = None,
 ) -> ScaffoldResult:
     """
     Create the project, configure it, and take the git steps that were agreed.
@@ -296,13 +302,15 @@ def run_scaffold(
             f"{root.name} sits inside an existing git repository; "
             "leaving its history, branch and remote alone."
         )
-    if ensure_gitignore(root):
-        notify(f"Wrote {GITIGNORE}, so a release does not commit its own build.")
+    if added := ensure_gitignore(root):
+        notify(f"Added to {GITIGNORE}: {', '.join(added)}.")
 
     branch = _settle_branch(repo, request.branch, own_repo, notify)
-    licensed = write_license(root, request.license_id, (today or dt.date.today()).year)
-    if licensed:
-        notify(f"Wrote {LICENSE_FILE} ({request.license_id}).")
+    if declare_license(root, request.license_id):
+        notify(
+            f"Recorded {request.license_id} in [project].license; "
+            f"the {LICENSE_FILE} file is yours to add."
+        )
 
     remote = _settle_remote(repo, request.remote, own_repo, notify)
     configure(root)
@@ -313,8 +321,7 @@ def run_scaffold(
         repo.push_upstream(ORIGIN, branch)
         notify(f"Pushed '{branch}' to {remote}.")
 
-    if request.sync:
-        _sync(runner, root, notify)
+    installed = _install(runner, root, notify) if request.install else False
 
     declared = request.license_id
     return ScaffoldResult(
@@ -324,7 +331,7 @@ def run_scaffold(
         remote=remote,
         committed=committed,
         pushed=pushed,
-        synced=request.sync,
+        installed=installed,
     )
 
 
@@ -381,14 +388,28 @@ def _commit(
     return True
 
 
-def _sync(runner: Runner, root: Path, notify: Notify) -> None:
+def _install(runner: Runner, root: Path, notify: Notify) -> bool:
     """
-    Create the environment and install the project into it, editable.
+    Install the new project into the environment that is already active.
 
-    `uv sync` rather than `uv pip install -e .`, which needs an environment that
-    does not exist yet in a project this new.
+    `uv pip install -e .` rather than `uv sync`, which would create a `.venv`
+    and a `uv.lock` inside a project that asked for neither.
+
+    Never fatal: this runs last, after the commit and the push, so the project
+    is already made and reporting beats unwinding nothing.
     """
-    result = runner.run(shlex.join(["uv", "sync", "--directory", str(root)]))
-    if not result.ok:
-        raise VommitError(f"Could not sync the project: {result.error}")
-    notify("Synced the project; `.venv` and `uv.lock` are in place.")
+    result = runner.run(
+        shlex.join(["uv", "pip", "install", "--directory", str(root), "-e", "."])
+    )
+    if result.ok:
+        notify("Installed the project into the active environment, editable.")
+        return True
+
+    if NO_ENVIRONMENT in result.error:
+        notify(
+            "No environment is active, so the project was not installed. "
+            "Activate one and run `uv pip install -e .`."
+        )
+    else:
+        notify(f"Could not install the project: {result.error}")
+    return False

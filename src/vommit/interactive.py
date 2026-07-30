@@ -397,30 +397,35 @@ class Prompts:
     """
     The `scaffold.Asker` protocol, asked on a real terminal.
 
-    A cancelled prompt (ctrl-c) answers None, which becomes the default here
-    rather than an empty project name three questions later.
+    `unsafe_ask` throughout, so ctrl-c raises `KeyboardInterrupt` and stops the
+    program. `ask` would swallow it and hand back None, which halfway through
+    creating a project means the remaining questions answer themselves and the
+    scaffold goes ahead on defaults nobody chose.
     """
 
     def text(self, question: str, default: str = "") -> str:
-        answer = questionary.text(
-            f"{question}:", default=default, style=_PROMPT_STYLE
-        ).ask()
-        return default if answer is None else str(answer)
+        return str(
+            questionary.text(
+                f"{question}:", default=default, style=_PROMPT_STYLE
+            ).unsafe_ask()
+        )
 
     def confirm(self, question: str, default: bool = True) -> bool:
-        answer = questionary.confirm(
-            question, default=default, style=_PROMPT_STYLE
-        ).ask()
-        return default if answer is None else bool(answer)
+        return bool(
+            questionary.confirm(
+                question, default=default, style=_PROMPT_STYLE
+            ).unsafe_ask()
+        )
 
     def choose(self, question: str, options: list[str], default: str) -> str:
-        answer = questionary.select(
-            f"{question}:",
-            choices=options,
-            default=default if default in options else None,
-            style=_PROMPT_STYLE,
-        ).ask()
-        return default if answer is None else str(answer)
+        return str(
+            questionary.select(
+                f"{question}:",
+                choices=options,
+                default=default if default in options else None,
+                style=_PROMPT_STYLE,
+            ).unsafe_ask()
+        )
 
 
 # class Example(TypedConfig, Interactive):

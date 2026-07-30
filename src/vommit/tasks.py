@@ -84,7 +84,9 @@ def _reported() -> t.Iterator[None]:
 
 
 def _notify(message: str) -> None:
-    rich.print(f"[blue]{message}[/blue]")
+    # escaped: these messages name things like [project].license, and rich would
+    # read the brackets as a style tag and swallow the word
+    rich.print(f"[blue]{escape(message)}[/blue]")
 
 
 def _project_root(project_dir: str | None) -> Path:
@@ -231,12 +233,12 @@ def _asker[ResultT](
         "non-interactive": "Take every answer from the flags and defaults.",
         "python": "Minimum Python version (default: the interpreter running vommit).",
         "description": "Project description; omitted from pyproject.toml when empty.",
-        "license": f"SPDX identifier, or '{licenses.NO_LICENSE}' (default: MIT).",
+        "license": f"SPDX identifier for [project].license, or '{licenses.NO_LICENSE}'.",
         "branch": "Release branch (default: the one git creates).",
         "remote": "URL to add as 'origin'.",
         "message": "Initial commit message; empty makes no commit.",
         "push": "Push the initial commit and set the upstream.",
-        "no-sync": "Skip `uv sync`, leaving no .venv or uv.lock.",
+        "install": "Install the project into the active environment, editable.",
         "pin-python": "Keep uv's .python-version file.",
         "no-workspace": "Do not join an enclosing uv workspace.",
     },
@@ -252,7 +254,7 @@ def init(
     remote: str | None = None,
     message: str | None = None,
     push: bool = False,
-    no_sync: bool = False,
+    install: bool = False,
     pin_python: bool = False,
     no_workspace: bool = False,
 ) -> None:
@@ -276,7 +278,7 @@ def init(
             remote=remote,
             commit_message=message or DEFAULT_COMMIT_MESSAGE,
             push=push,
-            sync=not no_sync,
+            install=install,
         )
         asker = Defaults() if non_interactive else Prompts()
         cwd = Path.cwd()
@@ -313,7 +315,7 @@ def _report_scaffold(result: ScaffoldResult) -> None:
     rich.print(f"[green]Created[/green] {escape(str(result.root))}")
     rich.print(f"  [dim]branch[/dim]  {escape(result.branch)}")
     if result.license_id:
-        rich.print(f"  [dim]license[/dim] {escape(result.license_id)}")
+        rich.print(f"  [dim]license[/dim] {escape(result.license_id)} [dim](add a LICENSE file)[/dim]")
     if result.remote:
         rich.print(f"  [dim]remote[/dim]  {escape(result.remote)}")
     if not result.committed:

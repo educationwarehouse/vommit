@@ -34,18 +34,25 @@ class GitRepo:
             raise VommitError(f"Could not {action}: {result.error}")
         return result
 
+    def _symbolic_branch(self) -> str | None:
+        """
+        The branch HEAD names, or None when HEAD names a commit directly.
+
+        Answers on an unborn branch, where `rev-parse --abbrev-ref` fails
+        outright, and declines on a detached checkout, where it does not.
+        """
+        result = self._git("symbolic-ref", "--short", "HEAD")
+        return result.out if result.ok and result.out else None
+
     def current_branch(self) -> str:
         """
         The checked-out branch, also before the first commit.
 
-        Two commands, because neither covers both states this runs in:
-        `symbolic-ref` answers on an unborn branch, where `rev-parse
-        --abbrev-ref` fails outright; `rev-parse` answers 'HEAD' on a detached
-        checkout, which is what CI hands us, where `symbolic-ref` fails.
+        Falls back to `rev-parse`, which answers 'HEAD' on the detached checkout
+        that CI hands us -- the one state a symbolic ref cannot describe.
         """
-        symbolic = self._git("symbolic-ref", "--short", "HEAD")
-        if symbolic.ok and symbolic.out:
-            return symbolic.out
+        if branch := self._symbolic_branch():
+            return branch
         return self._checked(
             "rev-parse", "--abbrev-ref", "HEAD", action="determine the current branch"
         ).out
@@ -81,12 +88,12 @@ class GitRepo:
         cannot: a repository created moments ago, where `init.defaultBranch` is
         a guess about a branch that already has a name.
         """
-        if upstream := self.main_branch_upstream(origin):
-            return upstream
-        symbolic = self._git("symbolic-ref", "--short", "HEAD")
-        if symbolic.ok and symbolic.out:
-            return symbolic.out
-        return self.main_branch_local() or None
+        return (
+            self.main_branch_upstream(origin)
+            or self._symbolic_branch()
+            or self.main_branch_local()
+            or None
+        )
 
     def resolve_branch(self, git: GitConfig) -> str:
         """
@@ -374,10 +381,19 @@ class GitRepo:
         self._checked("branch", "-m", branch, action=f"rename the branch to '{branch}'")
 
     def remotes(self) -> list[str]:
+        """
+        The remotes this repository knows, by name.
+
+        Empty outside a repository as well as inside one without remotes: both
+        mean there is nothing to fetch from, which is all a caller asks.
+        """
         result = self._git("remote")
         return result.out.splitlines() if result.ok else []
 
     def add_remote(self, name: str, url: str) -> None:
+        """
+        Point `name` at `url`, failing when the repository already has that name.
+        """
         self._checked("remote", "add", name, url, action=f"add remote '{name}'")
 
     def push_upstream(self, origin: str, branch: str) -> None:

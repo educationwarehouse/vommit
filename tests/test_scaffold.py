@@ -1,4 +1,3 @@
-import datetime as dt
 import shlex
 import typing as t
 import dataclasses as dc
@@ -15,16 +14,17 @@ from src.vommit.scaffold import (
     FALLBACK_GITIGNORE,
     GITIGNORE,
     LICENSE_FILE,
+    NO_ENVIRONMENT,
+    REQUIRED_IGNORES,
     Defaults,
     ScaffoldRequest,
-    copyright_holder,
     default_python,
     ensure_gitignore,
     ignore,
     plan_request,
     run_scaffold,
     uv_init_argv,
-    write_license,
+    declare_license,
 )
 from src.vommit.shell import LocalRunner
 
@@ -186,7 +186,7 @@ def test_defaults_asker_hands_the_request_back_unchanged():
         remote="git@example.com:me/mypkg.git",
         commit_message="chore: start",
         push=True,
-        sync=True,
+        install=True,
     )
     assert plan_request(defaults, Defaults()) == defaults
 
@@ -238,20 +238,23 @@ def test_plan_request_treats_a_blank_spdx_id_as_no_license():
     assert planned.license_id == licenses.NO_LICENSE
 
 
-def test_plan_request_offers_an_unknown_license_id_as_the_fallback():
+def test_plan_request_offers_an_uncommon_license_id_as_the_fallback():
     """
-    A `--license` we carry no text for must not become the offered default, or
-    the select would open on a choice that is not in the list.
+    A `--license` outside the offered list must not become the select's default,
+    or it would open on a choice that is not in it.
     """
     asker = ScriptedAsker()
-    plan_request(ScaffoldRequest(project_name="mypkg", license_id="Apache-2.0"), asker)
+    assert "EUPL-1.2" not in licenses.CHOICES
+
+    plan_request(ScaffoldRequest(project_name="mypkg", license_id="EUPL-1.2"), asker)
+
     assert asker.asked["License"] == licenses.DEFAULT_LICENSE
 
 
-def test_plan_request_offers_a_known_license_id_as_given():
+def test_plan_request_offers_a_listed_license_id_as_given():
     asker = ScriptedAsker()
-    plan_request(ScaffoldRequest(project_name="mypkg", license_id="ISC"), asker)
-    assert asker.asked["License"] == "ISC"
+    plan_request(ScaffoldRequest(project_name="mypkg", license_id="Apache-2.0"), asker)
+    assert asker.asked["License"] == "Apache-2.0"
 
 
 def test_plan_request_skips_the_commit_message_when_the_commit_is_declined():
@@ -279,93 +282,102 @@ def test_plan_request_offers_a_push_once_there_is_a_remote_and_a_commit():
     assert planned.push is True
 
 
-def test_plan_request_can_turn_the_sync_off():
+def test_plan_request_can_turn_the_install_off():
     planned = plan_request(
-        ScaffoldRequest(project_name="mypkg", sync=True),
-        ScriptedAsker({"Run `uv sync`": False}),
+        ScaffoldRequest(project_name="mypkg", install=True),
+        ScriptedAsker({"Install it": False}),
     )
-    assert planned.sync is False
+    assert planned.install is False
 
 
 # --- licenses ----------------------------------------------------------------
 
 
-@pytest.mark.parametrize("license_id", sorted(licenses.TEMPLATES))
-def test_every_offered_license_renders_with_the_holder_and_year(license_id):
-    text = licenses.render(license_id, "Robin", 2026)
-    assert text
-    assert "Robin" in text
-    assert "2026" in text
-    assert "{" not in text
-
-
-def test_render_declines_a_license_it_does_not_carry():
-    assert licenses.render("Apache-2.0", "Robin", 2026) is None
-
-
-def test_write_license_writes_the_file_and_the_metadata(tmp_path):
+def test_declare_license_records_the_identifier_only(tmp_path):
+    """
+    No LICENSE file and no `license-files`: the text is the author's to choose.
+    """
     root = project(tmp_path / "mypkg")
-    assert write_license(root, "MIT", 2026) is True
-
-    text = (root / LICENSE_FILE).read_text()
-    assert "MIT License" in text
-    assert "Copyright (c) 2026 Robin" in text
+    assert declare_license(root, "MIT") is True
 
     written = (root / "pyproject.toml").read_text()
     assert 'license = "MIT"' in written
-    assert 'license-files = ["LICENSE"]' in written
-
-
-def test_write_license_records_an_id_it_has_no_text_for(tmp_path):
-    """
-    `license-files` must stay out when there is no file, or the build breaks.
-    """
-    root = project(tmp_path / "mypkg")
-    assert write_license(root, "Apache-2.0", 2026) is False
-
-    written = (root / "pyproject.toml").read_text()
-    assert 'license = "Apache-2.0"' in written
     assert "license-files" not in written
     assert not (root / LICENSE_FILE).exists()
 
 
-@pytest.mark.parametrize("license_id", [licenses.NO_LICENSE, ""])
-def test_write_license_leaves_everything_alone_for_no_license(tmp_path, license_id):
+def test_declare_license_takes_an_identifier_with_no_carried_text(tmp_path):
     root = project(tmp_path / "mypkg")
-    assert write_license(root, license_id, 2026) is False
+    assert declare_license(root, "Apache-2.0") is True
+    assert 'license = "Apache-2.0"' in (root / "pyproject.toml").read_text()
+
+
+@pytest.mark.parametrize("license_id", [licenses.NO_LICENSE, ""])
+def test_declare_license_leaves_everything_alone_for_no_license(tmp_path, license_id):
+    root = project(tmp_path / "mypkg")
+    assert declare_license(root, license_id) is False
     assert (root / "pyproject.toml").read_text() == PYPROJECT
     assert not (root / LICENSE_FILE).exists()
 
 
-def test_copyright_holder_reads_the_name_uv_filled_in(tmp_path):
-    root = project(tmp_path / "mypkg")
-    assert copyright_holder(root, "the authors") == "Robin"
-
-
-@pytest.mark.parametrize(
-    "authors",
-    ["", "authors = []", 'authors = [\n    { email = "x@example.com" }\n]'],
-)
-def test_copyright_holder_falls_back_without_a_usable_name(tmp_path, authors):
-    root = project(tmp_path / "mypkg", f'[project]\nname = "mypkg"\n{authors}\n')
-    assert copyright_holder(root, "the authors") == "the authors"
+def test_every_offered_license_is_a_bare_identifier():
+    """
+    The choices are SPDX strings, not a table of texts to keep in step.
+    """
+    assert licenses.DEFAULT_LICENSE in licenses.COMMON
+    assert licenses.CHOICES[-2:] == [licenses.OTHER_LICENSE, licenses.NO_LICENSE]
 
 
 # --- gitignore ---------------------------------------------------------------
 
 
-def test_ensure_gitignore_writes_one_when_uv_did_not(tmp_path):
+def test_ensure_gitignore_writes_one_when_there_is_none(tmp_path):
     root = project(tmp_path / "mypkg")
-    assert ensure_gitignore(root) is True
+
+    assert ensure_gitignore(root) == REQUIRED_IGNORES
+
+    written = (root / GITIGNORE).read_text()
+    assert written == FALLBACK_GITIGNORE
+    for entry in REQUIRED_IGNORES:
+        assert entry in written
+
+
+def test_ensure_gitignore_tops_up_the_one_uv_wrote(tmp_path):
+    """
+    uv's own `.gitignore` has `.venv` but not `venv/`.
+    """
+    root = project(tmp_path / "mypkg")
+    (root / GITIGNORE).write_text("dist/\n.venv\n")
+
+    assert ensure_gitignore(root) == [
+        "__pycache__/",
+        "*.py[oc]",
+        "build/",
+        "wheels/",
+        "*.egg-info",
+        "venv/",
+    ]
+
+    lines = (root / GITIGNORE).read_text().splitlines()
+    assert lines[:2] == ["dist/", ".venv"]
+    assert set(REQUIRED_IGNORES) <= set(lines)
+
+
+def test_ensure_gitignore_adds_a_newline_before_appending(tmp_path):
+    root = project(tmp_path / "mypkg")
+    (root / GITIGNORE).write_text("dist/")
+
+    ensure_gitignore(root)
+
+    assert (root / GITIGNORE).read_text().splitlines()[0] == "dist/"
+
+
+def test_ensure_gitignore_changes_nothing_when_everything_is_there(tmp_path):
+    root = project(tmp_path / "mypkg")
+    (root / GITIGNORE).write_text(FALLBACK_GITIGNORE)
+
+    assert ensure_gitignore(root) == []
     assert (root / GITIGNORE).read_text() == FALLBACK_GITIGNORE
-    assert "dist/" in FALLBACK_GITIGNORE
-
-
-def test_ensure_gitignore_keeps_the_one_uv_wrote(tmp_path):
-    root = project(tmp_path / "mypkg")
-    (root / GITIGNORE).write_text("dist/\n")
-    assert ensure_gitignore(root) is False
-    assert (root / GITIGNORE).read_text() == "dist/\n"
 
 
 # --- run_scaffold ------------------------------------------------------------
@@ -397,7 +409,6 @@ def test_run_scaffold_creates_configures_and_commits(tmp_path):
         runner=runner,
         cwd=tmp_path,
         configure=configured.append,
-        today=dt.date(2026, 7, 28),
     )
 
     assert result.root == root.resolve()
@@ -409,7 +420,8 @@ def test_run_scaffold_creates_configures_and_commits(tmp_path):
     repo = GitRepo(runner=LocalRunner(), root=root)
     assert repo.current_branch() == "main"
     assert repo.head_subject() == "chore: initial commit"
-    assert "Copyright (c) 2026" in (root / LICENSE_FILE).read_text()
+    assert 'license = "MIT"' in (root / "pyproject.toml").read_text()
+    assert not (root / LICENSE_FILE).exists()
 
 
 def test_run_scaffold_renames_the_branch_git_init_chose(tmp_path):
@@ -547,36 +559,80 @@ def test_run_scaffold_keeps_an_existing_origin(tmp_path):
     assert GitRepo(runner=LocalRunner(), root=root).remotes() == ["origin"]
 
 
-def test_run_scaffold_syncs_when_asked(tmp_path):
+def test_run_scaffold_installs_into_the_active_environment(tmp_path):
     root = tmp_path / "mypkg"
     runner = uv_init_faker(root)
     notes: list[str] = []
 
     result = run_scaffold(
-        ScaffoldRequest(project_name="mypkg", sync=True),
+        ScaffoldRequest(project_name="mypkg", install=True),
         runner=runner,
         cwd=tmp_path,
         configure=lambda _: None,
         notify=notes.append,
     )
 
-    assert result.synced is True
-    assert runner.ran(f"uv sync --directory {root.resolve()}")
-    assert any("uv.lock" in note for note in notes)
+    assert result.installed is True
+    assert runner.ran(f"uv pip install --directory {root.resolve()} -e .")
+    # `uv sync` would create a .venv and a uv.lock the project did not ask for
+    assert not runner.ran("uv sync")
+    assert any("editable" in note for note in notes)
 
 
-def test_run_scaffold_reports_a_failed_sync(tmp_path):
+def test_run_scaffold_says_so_when_no_environment_is_active(tmp_path):
+    """
+    The install runs last, after the commit and the push, so a missing
+    environment is worth reporting rather than failing the whole command.
+    """
     root = tmp_path / "mypkg"
     runner = uv_init_faker(root)
-    runner.reply("uv sync", returncode=1, stderr="no interpreter")
+    runner.reply("uv pip install", returncode=2, stderr=f"error: {NO_ENVIRONMENT}")
+    notes: list[str] = []
 
-    with pytest.raises(VommitError, match="no interpreter"):
-        run_scaffold(
-            ScaffoldRequest(project_name="mypkg", sync=True),
-            runner=runner,
-            cwd=tmp_path,
-            configure=lambda _: None,
-        )
+    result = run_scaffold(
+        ScaffoldRequest(
+            project_name="mypkg", commit_message="chore: initial commit", install=True
+        ),
+        runner=runner,
+        cwd=tmp_path,
+        configure=lambda _: None,
+        notify=notes.append,
+    )
+
+    assert result.installed is False
+    assert result.committed is True
+    assert any("No environment is active" in note for note in notes)
+
+
+def test_run_scaffold_reports_any_other_install_failure(tmp_path):
+    root = tmp_path / "mypkg"
+    runner = uv_init_faker(root)
+    runner.reply("uv pip install", returncode=1, stderr="no interpreter")
+    notes: list[str] = []
+
+    result = run_scaffold(
+        ScaffoldRequest(project_name="mypkg", install=True),
+        runner=runner,
+        cwd=tmp_path,
+        configure=lambda _: None,
+        notify=notes.append,
+    )
+
+    assert result.installed is False
+    assert any("no interpreter" in note for note in notes)
+
+
+def test_run_scaffold_does_not_install_unless_asked(tmp_path):
+    runner = uv_init_faker(tmp_path / "mypkg")
+
+    run_scaffold(
+        ScaffoldRequest(project_name="mypkg"),
+        runner=runner,
+        cwd=tmp_path,
+        configure=lambda _: None,
+    )
+
+    assert not runner.ran("uv pip install")
 
 
 def test_run_scaffold_leaves_an_enclosing_repository_alone(tmp_path):
