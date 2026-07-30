@@ -404,6 +404,30 @@ def test_declare_license_leaves_everything_alone_for_no_license(tmp_path, licens
     assert not (root / LICENSE_FILE).exists()
 
 
+def test_declare_license_writes_into_a_table_split_by_other_sections(tmp_path):
+    """
+    `[project]` interrupted by another section is an out-of-order table rather
+    than a plain one; it is still where the license belongs.
+    """
+    root = project(
+        tmp_path / "mypkg",
+        '[project]\nname = "mypkg"\nversion = "0.0.0"\n\n'
+        '[build-system]\nrequires = ["uv_build"]\n\n'
+        "[project.optional-dependencies]\ndev = []\n",
+    )
+    assert declare_license(root, "MIT") is True
+    assert 'license = "MIT"' in (root / "pyproject.toml").read_text()
+
+
+@pytest.mark.parametrize("content", ['project = "mypkg"\n', 'name = "mypkg"\n'])
+def test_declare_license_refuses_a_pyproject_without_a_project_table(
+    tmp_path, content
+):
+    root = project(tmp_path / "mypkg", content)
+    with pytest.raises(VommitError, match=r"\[project\] must be a TOML table"):
+        declare_license(root, "MIT")
+
+
 def test_every_offered_license_is_a_bare_identifier():
     """
     The choices are SPDX strings, not a table of texts to keep in step.

@@ -231,6 +231,51 @@ def test_including_prereleases_gives_each_one_its_own_entry(sandbox):
     assert result.entry is not None
 
 
+def test_a_configured_commit_author_reaches_the_release_commit(sandbox):
+    sandbox.set_config("tool.vommit.git", commit_author="Release Bot <bot@example.com>")
+    sandbox.commits("feat: something new")
+
+    bump(sandbox)
+
+    assert sandbox.git("log", "-1", "--format=%an <%ae>").out == (
+        "Release Bot <bot@example.com>"
+    )
+
+
+def test_a_malformed_commit_author_stops_before_the_version_changes(sandbox):
+    """
+    The check has to come first: git only refuses the author at commit time,
+    which is after `uv version` has rewritten pyproject.toml.
+    """
+    sandbox.set_config("tool.vommit.git", commit_author="Release Bot")
+    sandbox.commits("feat: something new")
+    before = (sandbox.work / "pyproject.toml").read_text()
+
+    with pytest.raises(VommitError, match="git takes 'Name <email>'"):
+        bump(sandbox)
+
+    assert (sandbox.work / "pyproject.toml").read_text() == before
+    assert sandbox.tags() == []
+
+
+def test_a_commit_free_bump_ignores_the_commit_author(sandbox):
+    """
+    `commit_format = ""` stages without committing, so there is no commit for an
+    author to land on and no reason to refuse one that will never be used --
+    left over from before committing was switched off, say.
+    """
+    sandbox.set_config("tool.vommit.git", commit_format="", commit_author="Bogus")
+    sandbox.commits("feat: something new")
+
+    result = bump(sandbox)
+
+    assert result is not None
+    assert result.commit_message is None
+    assert sandbox.log(1) == ["feat: something new"]
+    staged = sorted(line[3:] for line in sandbox.status())
+    assert staged == ["CHANGELOG.md", "pyproject.toml", "uv.lock"]
+
+
 def test_including_prereleases_keeps_the_window_at_the_last_tag(sandbox):
     sandbox.set_config("tool.vommit.changelog", include_prereleases=True)
     sandbox.commits("feat: something new")
