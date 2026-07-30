@@ -238,7 +238,7 @@ def test_commit_can_carry_a_configured_author(sandbox):
     repo = repo_of(sandbox)
 
     repo.add(["CHANGELOG.md"])
-    repo.commit("1.0.0", "Release Bot <bot@example.com>")
+    repo.commit("1.0.0", author="Release Bot <bot@example.com>")
 
     assert sandbox.git("log", "-1", "--format=%an <%ae>").out == (
         "Release Bot <bot@example.com>"

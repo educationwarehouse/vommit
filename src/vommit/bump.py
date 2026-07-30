@@ -253,7 +253,7 @@ def run_bump(
                 f"take {next_version} back."
             ) from error
         if commit_message:
-            _commit(repo, commit_message, next_version, author)
+            _commit(repo, commit_message, next_version, author=author)
         if tag:
             repo.tag(tag)
 
@@ -264,7 +264,7 @@ def _commit(
     repo: GitRepo, message: str, version: str, author: str | None = None
 ) -> None:
     try:
-        repo.commit(message, author)
+        repo.commit(message, author=author)
     except VommitError as error:
         # the version is already written by now; say where that leaves things
         raise VommitError(
