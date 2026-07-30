@@ -14,6 +14,7 @@ from src.vommit.migrate import (
     Note,
     Raw,
     VersionFile,
+    VersionTransform,
     apply_static_version,
     parse_unsupported_policy,
     plan_static_version,
@@ -813,6 +814,34 @@ def test_uv_can_only_bump_the_transformed_project(tmp_path):
 
     assert uv.current_version() == "0.1.1"
     assert uv.preview_bump("patch") == "0.1.2"
+
+
+def test_applying_the_transform_to_a_table_split_by_other_sections(tmp_path):
+    """
+    `[project]` interrupted by another section is an out-of-order table rather
+    than a plain one; the version still goes in.
+    """
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        '[project]\nname = "endow"\n\n'
+        '[build-system]\nrequires = ["hatchling"]\n\n'
+        "[project.optional-dependencies]\ndev = []\n"
+    )
+
+    apply_static_version(pyproject, VersionTransform(version="1.2.3", source="a tag"))
+
+    assert tomlkit.parse(pyproject.read_text())["project"]["version"] == "1.2.3"
+
+
+@pytest.mark.parametrize("content", ['project = "endow"\n', 'name = "endow"\n'])
+def test_applying_the_transform_refuses_a_missing_project_table(tmp_path, content):
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(content)
+
+    with pytest.raises(VommitError, match=r"\[project\] must be a TOML table"):
+        apply_static_version(
+            pyproject, VersionTransform(version="1.2.3", source="a tag")
+        )
 
 
 def test_rewriting_a_version_file(tmp_path):

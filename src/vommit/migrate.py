@@ -6,7 +6,6 @@ import typing as t
 from pathlib import Path, PurePosixPath
 
 import tomlkit
-from tomlkit.container import Container
 
 from .commits import BREAKING, VersionBump
 from .config import DERIVE_BRANCH, ChangelogConfig, Config
@@ -1051,8 +1050,8 @@ def apply_static_version(pyproject: Path, transform: VersionTransform) -> None:
     Carry out `transform`: static version in, `dynamic` and the hook table out.
     """
     document = read_toml(pyproject)
-    project = document["project"]
-    if not isinstance(project, Container):
+    project = document.get("project")
+    if not isinstance(project, dict):
         raise VommitError("[project] must be a TOML table")
 
     project["version"] = transform.version
