@@ -7,15 +7,21 @@ authors = [
     { name = "Robin van der Noord", email = "robinvandernoord@gmail.com" }
 ]
 requires-python = ">=3.13"
+# Upper bounds are deliberate: several of these are read for their types, not
+# only their functions -- a `tomlkit` table is type-checked, `ewok.App` carries
+# the whole CLI -- so a major of theirs is a break of ours. Floors are the
+# versions vommit is known to work against, not the oldest that might.
 dependencies = [
     "configuraptor >= 2.5.4, < 3",
-    "ewok",
-    "keyring",
-    "packaging",
+    # 0.x: a minor is a major, and App() failing to construct means no CLI at all
+    "ewok >= 0.5.2, < 0.6",
+    "keyring >= 25, < 26",
+    "packaging >= 24, < 27",
     "questionary >= 2, < 3",
-    "requests",
-    "rich",
-    "tomlkit",
+    "requests >= 2.32, < 3",
+    "rich >= 13, < 16",
+    # 0.x, and its item/container hierarchy is type-checked in scaffold + migrate
+    "tomlkit >= 0.13, < 0.16",
 ]
 
 [project.scripts]
@@ -27,8 +33,12 @@ ssh = [
     "ssh-agent-keyring",
 ]
 dev = [
-    "pytest",
-    "pytest-cov",
+    "pytest >= 8, < 10",
+    "pytest-cov >= 5, < 8",
+    # the tool vommit drives. `uv version --bump` arrived in 0.7.0; 0.6 rejects the
+    # flag outright. No upper bound on purpose: tests should meet a breaking uv
+    # before a user does. This does not constrain the uv a user has on PATH.
+    "uv >= 0.7",
 ]
 
 [project.entry-points.edwh]
