@@ -47,6 +47,11 @@ Runs `uv init --package`, configures Vommit in the result, and leaves a project
 that is ready to release: one commit holding the whole scaffold, on a named
 branch, with a declared license and a changelog.
 
+The version starts at `0.0.0`, not the `0.1.0` uv writes. Nothing has been
+released yet, so the first `vommit bump` derives the real first version from the
+commits: `0.1.0` for a feature, `0.0.1` for a fix. Starting at `0.1.0` would make
+that first release `0.2.0` and leave `0.1.0` a version nobody can install.
+
 It asks for the minimum Python version, a description, a license, the release
 branch, a Git remote, the first commit message, and where the project's
 virtual environment should go. Every flag pre-fills its question, so

@@ -11,6 +11,7 @@ from src.vommit.git import GitRepo
 from src.vommit.scaffold import (
     DEFAULT_BRANCH,
     DEFAULT_COMMIT_MESSAGE,
+    INITIAL_VERSION,
     FALLBACK_GITIGNORE,
     GITIGNORE,
     LICENSE_FILE,
@@ -26,6 +27,7 @@ from src.vommit.scaffold import (
     run_scaffold,
     uv_init_argv,
     declare_license,
+    reset_version,
 )
 from src.vommit.shell import LocalRunner
 
@@ -318,6 +320,36 @@ def test_request_refuses_a_venv_outside_the_project():
             ScaffoldRequest(project_name="mypkg", venv=name)
 
 
+# --- version ------------------------------------------------------------------
+
+
+def test_reset_version_undoes_uvs_head_start(tmp_path):
+    """
+    `uv init` writes 0.1.0, which claims a release that never happened: the
+    first bump would then go to 0.2.0 and leave 0.1.0 uninstallable.
+    """
+    root = project(tmp_path / "mypkg")
+
+    assert reset_version(root) is True
+    assert f'version = "{INITIAL_VERSION}"' in (root / "pyproject.toml").read_text()
+
+
+def test_reset_version_leaves_an_already_unreleased_project_alone(tmp_path):
+    root = project(
+        tmp_path / "mypkg", f'[project]\nname = "mypkg"\nversion = "{INITIAL_VERSION}"\n'
+    )
+    before = (root / "pyproject.toml").read_text()
+
+    assert reset_version(root) is False
+    assert (root / "pyproject.toml").read_text() == before
+
+
+def test_reset_version_without_a_project_table(tmp_path):
+    root = project(tmp_path / "mypkg", "[tool.other]\nkey = 1\n")
+
+    assert reset_version(root) is False
+
+
 # --- licenses ----------------------------------------------------------------
 
 
@@ -448,7 +480,9 @@ def test_run_scaffold_creates_configures_and_commits(tmp_path):
     repo = GitRepo(runner=LocalRunner(), root=root)
     assert repo.current_branch() == "main"
     assert repo.head_subject() == "chore: initial commit"
-    assert 'license = "MIT"' in (root / "pyproject.toml").read_text()
+    written = (root / "pyproject.toml").read_text()
+    assert 'license = "MIT"' in written
+    assert f'version = "{INITIAL_VERSION}"' in written
     assert not (root / LICENSE_FILE).exists()
 
 

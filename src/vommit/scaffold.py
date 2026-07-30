@@ -31,6 +31,9 @@ ORIGIN = "origin"
 DEFAULT_BRANCH = "main"
 DEFAULT_COMMIT_MESSAGE = "chore: initial commit"
 
+#: Where a project that has never been released sits. `uv init` says 0.1.0.
+INITIAL_VERSION = "0.0.0"
+
 #: The answer that asks for no environment at all.
 NO_VENV = "none"
 
@@ -263,6 +266,26 @@ def _settle_venv(defaults: ScaffoldRequest, asker: Asker) -> str | None:
     return None if chosen == NO_VENV else chosen
 
 
+def reset_version(root: Path) -> bool:
+    """
+    Put the version back to 0.0.0, where nothing has been released yet.
+
+    `uv init` writes 0.1.0, which claims a release that never happened: the first
+    `bump` would then take a `feat` project to 0.2.0 and leave 0.1.0 a version
+    nobody can install. From 0.0.0 the first release is the one the commits ask
+    for -- 0.1.0 for a feature, 0.0.1 for a fix.
+    """
+    pyproject = root / PYPROJECT
+    document = read_toml(pyproject)
+    project = document.get("project")
+    if not isinstance(project, dict) or project.get("version") == INITIAL_VERSION:
+        return False
+
+    project["version"] = INITIAL_VERSION
+    pyproject.write_text(document.as_string())
+    return True
+
+
 def declare_license(root: Path, license_id: str) -> bool:
     """
     Record the chosen license in `[project].license`, and nothing else.
@@ -331,6 +354,8 @@ def run_scaffold(
         notify(f"Added to {GITIGNORE}: {', '.join(added)}.")
 
     branch = _settle_branch(repo, request.branch, own_repo, notify)
+    if reset_version(root):
+        notify(f"Set the version to {INITIAL_VERSION}; nothing is released yet.")
     if declare_license(root, request.license_id):
         notify(
             f"Recorded {request.license_id} in [project].license; "
