@@ -96,9 +96,7 @@ def _ask_for_value(
             auto_enter=False,
             qmark=">>",
             style=_PROMPT_STYLE,
-        ).ask()
-        if selected is None:
-            raise KeyboardInterrupt(f"Input cancelled for field '{field_name}'.")
+        ).unsafe_ask()
         return selected
 
     raw = questionary.text(
@@ -108,9 +106,7 @@ def _ask_for_value(
         default=f"{default} " if has_default else "",
         qmark=">>",
         style=_PROMPT_STYLE,
-    ).ask()
-    if raw is None:
-        raise KeyboardInterrupt(f"Input cancelled for field '{field_name}'.")
+    ).unsafe_ask()
     raw = (raw or "").strip()
 
     if raw == "":
@@ -146,9 +142,7 @@ def _select_literal(
         qmark=">>",
         pointer="=>",
         style=_PROMPT_STYLE,
-    ).ask()
-    if selected is None:
-        raise KeyboardInterrupt(f"Selection cancelled for field '{field_name}'.")
+    ).unsafe_ask()
     for choice in choices:
         if str(choice) == selected:
             return choice

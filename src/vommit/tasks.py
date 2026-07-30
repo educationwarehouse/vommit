@@ -83,6 +83,11 @@ def _reported() -> t.Iterator[None]:
         # Exit prints its message verbatim, so colour it here instead
         rich.print(f"[red]{escape(str(error))}[/red]")
         raise Exit(code=1) from error
+    except KeyboardInterrupt as interrupt:
+        # every prompt uses `unsafe_ask`, so ctrl-c arrives here rather than
+        # answering None and letting the command carry on with defaults
+        rich.print("[yellow]Interrupted.[/yellow]")
+        raise Exit(code=1) from interrupt
 
 
 def _notify(message: str) -> None:
@@ -221,7 +226,7 @@ def _asker[ResultT](
         if not sys.stdin.isatty():
             rich.print(f"[yellow]{text} No terminal to ask on; pass --yes.[/yellow]")
             return False
-        return bool(questionary.confirm(text, default=True).ask())
+        return bool(questionary.confirm(text, default=True).unsafe_ask())
 
     return ask
 
@@ -521,7 +526,7 @@ def _migrate_choice(report: MigrationReport, yes: bool) -> MigrateChoice:
         question,
         choices=list(MIGRATE_CHOICES.values()),
         default=MIGRATE_CHOICES[default],
-    ).ask()
+    ).unsafe_ask()
     return next(
         (choice for choice, label in MIGRATE_CHOICES.items() if label == answer),
         "stop",
@@ -613,7 +618,7 @@ def _confirm(question: str, yes: bool, default: bool = True) -> bool:
             f"[yellow]{escape(question)} No terminal to ask on; skipped.[/yellow]"
         )
         return False
-    return bool(questionary.confirm(question, default=default).ask())
+    return bool(questionary.confirm(question, default=default).unsafe_ask())
 
 
 def _pin_branch(c: Context, config: Config, root: Path) -> None:
@@ -815,7 +820,7 @@ def _ask_token(replacing: bool, storing: bool = True) -> str:
         )
     lead = "Replace the stored PyPI token" if replacing else "PyPI token"
     tail = "" if storing else ", used once and not stored"
-    answer = questionary.password(f"{lead} (input hidden{tail}):").ask()
+    answer = questionary.password(f"{lead} (input hidden{tail}):").unsafe_ask()
     if not answer:
         raise VommitError("No token entered.")
     return str(answer)
