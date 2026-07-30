@@ -22,7 +22,9 @@ from .shell import Runner
 Notify = t.Callable[[str], None]
 
 #: Writes the vommit config into the finished project; `setup`, in practice.
-Configure = t.Callable[[Path], None]
+#: Takes the branch as well as the root: `init` has already settled which branch
+#: this project releases from, and deriving it a second time can disagree.
+Configure = t.Callable[[Path, str], None]
 
 PYPROJECT = "pyproject.toml"
 GITIGNORE = ".gitignore"
@@ -214,12 +216,7 @@ def plan_request(
         "Minimum Python version", defaults.python or default_python()
     ).strip()
 
-    offered = defaults.license_id if defaults.license_id in licenses.CHOICES else None
-    license_id = asker.choose(
-        "License", licenses.CHOICES, offered or licenses.DEFAULT_LICENSE
-    )
-    if license_id == licenses.OTHER_LICENSE:
-        license_id = asker.text("SPDX license identifier", "").strip()
+    license_id = _settle_license(defaults.license_id, asker)
 
     branch_default = detected_branch or defaults.branch
     branch = asker.text("Release branch", branch_default).strip() or branch_default
@@ -250,6 +247,41 @@ def plan_request(
         push=push,
         venv=_settle_venv(defaults, asker),
     )
+
+
+def initial_commit_message(supplied: str | None) -> str | None:
+    """
+    The message `init` commits with, or None to make no commit at all.
+
+    An absent flag takes the default; an explicitly empty one asks for no
+    commit, which is otherwise unsayable under `--non-interactive` -- there is no
+    prompt there to answer no to.
+    """
+    if supplied is None:
+        return DEFAULT_COMMIT_MESSAGE
+    return supplied.strip() or None
+
+
+def _settle_license(supplied: str, asker: Asker) -> str:
+    """
+    The SPDX identifier to record, keeping one we were given but do not offer.
+
+    An identifier outside `CHOICES` cannot be the select's default -- it would
+    open on a choice that is not in the list -- so it is carried by the `other`
+    answer instead, which pre-fills the follow-up with it. That way an asker
+    that only ever takes defaults hands back the identifier it was given, rather
+    than silently declaring the package under `DEFAULT_LICENSE`.
+    """
+    listed = supplied in licenses.CHOICES
+    chosen = asker.choose(
+        "License",
+        licenses.CHOICES,
+        supplied if listed else licenses.OTHER_LICENSE,
+    )
+    if chosen != licenses.OTHER_LICENSE:
+        return chosen
+
+    return asker.text("SPDX license identifier", "" if listed else supplied).strip()
 
 
 def _settle_venv(defaults: ScaffoldRequest, asker: Asker) -> str | None:
@@ -305,7 +337,22 @@ def declare_license(root: Path, license_id: str) -> bool:
     return True
 
 
-def ensure_gitignore(root: Path) -> list[str]:
+def wanted_ignores(venv: str | None = None) -> list[str]:
+    """
+    The ignore entries this project needs, the chosen environment included.
+
+    `uv venv` happens to drop a `.gitignore` holding `*` into whatever it
+    creates, so a directory named anything at all is currently invisible to git
+    -- but that is uv's promise, not ours, and a `.gitignore` naming `venv/`
+    while the project keeps its environment in `env/` is wrong on its face.
+    """
+    entries = list(REQUIRED_IGNORES)
+    if venv and venv not in entries and f"{venv}/" not in entries:
+        entries.append(f"{venv}/")
+    return entries
+
+
+def ensure_gitignore(root: Path, venv: str | None = None) -> list[str]:
     """
     Make sure build output and environments are ignored, and say what was added.
 
@@ -314,13 +361,16 @@ def ensure_gitignore(root: Path) -> list[str]:
     uv does write is missing `venv/`, so an existing file is topped up rather
     than trusted; everything already in it is left as it stands.
     """
+    required = wanted_ignores(venv)
     path = root / GITIGNORE
     if not path.exists():
-        path.write_text(FALLBACK_GITIGNORE)
-        return REQUIRED_IGNORES
+        extra = [entry for entry in required if entry not in REQUIRED_IGNORES]
+        body = FALLBACK_GITIGNORE + ("\n".join(extra) + "\n" if extra else "")
+        path.write_text(body)
+        return required
 
     present = set(path.read_text().splitlines())
-    missing = [entry for entry in REQUIRED_IGNORES if entry not in present]
+    missing = [entry for entry in required if entry not in present]
     if missing:
         existing = path.read_text()
         separator = "" if existing.endswith("\n") else "\n"
@@ -350,7 +400,7 @@ def run_scaffold(
             f"{root.name} sits inside an existing git repository; "
             "leaving its history, branch and remote alone."
         )
-    if added := ensure_gitignore(root):
+    if added := ensure_gitignore(root, request.venv):
         notify(f"Added to {GITIGNORE}: {', '.join(added)}.")
 
     branch = _settle_branch(repo, request.branch, own_repo, notify)
@@ -363,7 +413,7 @@ def run_scaffold(
         )
 
     remote = _settle_remote(repo, request.remote, own_repo, notify)
-    configure(root)
+    configure(root, branch)
 
     committed = _commit(repo, request.commit_message, own_repo, notify)
     pushed = bool(remote) and committed and request.push

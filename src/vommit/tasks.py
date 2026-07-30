@@ -50,12 +50,12 @@ from .migrate import (
 from .release import ReleaseRequest, ReleaseResult, Step, run_release
 from .scaffold import (
     DEFAULT_BRANCH,
-    DEFAULT_COMMIT_MESSAGE,
     DEFAULT_VENV,
     NO_VENV,
     Defaults,
     ScaffoldRequest,
     ScaffoldResult,
+    initial_commit_message,
     plan_request,
     run_scaffold,
 )
@@ -243,7 +243,7 @@ def _asker[ResultT](
         "license": f"SPDX identifier for [project].license, or '{licenses.NO_LICENSE}'.",
         "branch": "Release branch (default: the one git creates).",
         "remote": "URL to add as 'origin'.",
-        "message": "Initial commit message; empty makes no commit.",
+        "message": "Initial commit message; pass an empty one to make no commit.",
         "push": "Push the initial commit and set the upstream.",
         "venv": "Directory for the project's own environment, or '{}'.".format(NO_VENV),
         "pin-python": "Keep uv's .python-version file.",
@@ -283,7 +283,7 @@ def init(
             pin_python=pin_python,
             workspace=not no_workspace,
             remote=remote,
-            commit_message=message or DEFAULT_COMMIT_MESSAGE,
+            commit_message=initial_commit_message(message),
             push=push,
             venv=None if venv.strip().lower() == NO_VENV else venv.strip(),
         )
@@ -298,7 +298,9 @@ def init(
             request,
             runner=runner,
             cwd=cwd,
-            configure=lambda root: _configure_new(c, root, non_interactive),
+            configure=lambda root, settled: _configure_new(
+                c, root, settled, non_interactive
+            ),
             notify=_notify,
         )
         _report_scaffold(result)
@@ -311,11 +313,20 @@ def _detected_branch(runner: ContextRunner, cwd: Path) -> str:
     return GitRepo(runner=runner, root=cwd).main_branch_local() or DEFAULT_BRANCH
 
 
-def _configure_new(c: Context, root: Path, non_interactive: bool) -> None:
+def _configure_new(
+    c: Context,
+    root: Path,
+    branch: str,
+    non_interactive: bool,
+) -> None:
     """
     Write the vommit config into the project `init` just created.
+
+    The branch is handed over rather than left to be derived: `init` has already
+    renamed the checkout to it, and a remote whose HEAD names another branch
+    would otherwise win and configure a release from a branch nobody is on.
     """
-    setup(c, non_interactive=non_interactive, project_dir=str(root))
+    setup(c, non_interactive=non_interactive, project_dir=str(root), branch=branch)
 
 
 def _report_scaffold(result: ScaffoldResult) -> None:
@@ -340,13 +351,15 @@ def setup(
     non_interactive: bool = False,
     project_dir: str | None = None,
     mode: SetupMode = "missing",
+    branch: str | None = None,
 ) -> None:
     """
     Create or complete the vommit config in this project's pyproject.toml.
 
     Hands over to `migrate` when it finds a python-semantic-release v7 config
     and nothing of vommit's own. `--mode=all` revisits every setting rather than
-    only the missing ones.
+    only the missing ones. `--branch` supplies the release branch that would
+    otherwise be derived from the remote or the checkout.
     """
     root = _project_root(project_dir)
     pyproject = root / "pyproject.toml"
@@ -372,7 +385,7 @@ def setup(
             else:
                 config = Config.interactive(config, present_paths=present_paths)
 
-        _write_config(c, config, root, pyproject)
+        _write_config(c, config, root, pyproject, branch)
         _offer_version_files(root, pyproject, non_interactive)
 
 
@@ -409,11 +422,17 @@ def _offer_version_files(root: Path, pyproject: Path, non_interactive: bool) -> 
     _apply_version_plan(plan, root, pyproject, yes=False)
 
 
-def _write_config(c: Context, config: Config, root: Path, pyproject: Path) -> None:
+def _write_config(
+    c: Context,
+    config: Config,
+    root: Path,
+    pyproject: Path,
+    branch: str | None = None,
+) -> None:
     """
     The tail every setup path shares: pin the branch, write, make a changelog.
     """
-    _pin_branch(c, config, root)
+    _pin_branch(c, config, root, branch)
     config.write_to_pyproject(pyproject)
     if changelog := config.active_changelog:
         Changelog(settings=changelog, root=root).ensure()
@@ -621,15 +640,26 @@ def _confirm(question: str, yes: bool, default: bool = True) -> bool:
     return bool(questionary.confirm(question, default=default).unsafe_ask())
 
 
-def _pin_branch(c: Context, config: Config, root: Path) -> None:
+def _pin_branch(
+    c: Context,
+    config: Config,
+    root: Path,
+    branch: str | None = None,
+) -> None:
     """
-    Write the detected branch rather than `<head>`, so later runs are explicit.
+    Write a concrete branch rather than `<head>`, so later runs are explicit.
+
+    A branch given by the caller wins over detection: it is the one this project
+    was just put on, and the remote's HEAD may well name a different one.
     """
     if not (git := config.active_git) or git.branch != DERIVE_BRANCH:
         return
-    repo = GitRepo(runner=ContextRunner(c), root=root)
-    if branch := repo.detect_release_branch(git.origin):
+    if branch:
         git.branch = branch
+        return
+    repo = GitRepo(runner=ContextRunner(c), root=root)
+    if detected := repo.detect_release_branch(git.origin):
+        git.branch = detected
 
 
 @task()

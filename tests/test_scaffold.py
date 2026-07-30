@@ -17,6 +17,8 @@ from src.vommit.scaffold import (
     LICENSE_FILE,
     NO_VENV,
     VENV_CHOICES,
+    initial_commit_message,
+    wanted_ignores,
     REQUIRED_IGNORES,
     Defaults,
     ScaffoldRequest,
@@ -241,23 +243,45 @@ def test_plan_request_treats_a_blank_spdx_id_as_no_license():
     assert planned.license_id == licenses.NO_LICENSE
 
 
-def test_plan_request_offers_an_uncommon_license_id_as_the_fallback():
+def test_plan_request_keeps_a_license_it_does_not_offer():
     """
-    A `--license` outside the offered list must not become the select's default,
-    or it would open on a choice that is not in it.
+    Regression: an identifier outside CHOICES became MIT under `Defaults`, so
+    `--license EUPL-1.2 --non-interactive` declared the package under MIT.
     """
-    asker = ScriptedAsker()
     assert "EUPL-1.2" not in licenses.CHOICES
 
+    planned = plan_request(
+        ScaffoldRequest(project_name="mypkg", license_id="EUPL-1.2"), Defaults()
+    )
+    assert planned.license_id == "EUPL-1.2"
+
+
+def test_plan_request_carries_an_unoffered_license_through_other():
+    """
+    It cannot be the select's default -- that would open on a choice absent from
+    the list -- so it rides on `other` and pre-fills the follow-up, which is also
+    how a person gets to see and change it.
+    """
+    asker = ScriptedAsker()
     plan_request(ScaffoldRequest(project_name="mypkg", license_id="EUPL-1.2"), asker)
 
-    assert asker.asked["License"] == licenses.DEFAULT_LICENSE
+    assert asker.asked["License"] == licenses.OTHER_LICENSE
+    assert asker.asked["SPDX license identifier"] == "EUPL-1.2"
+
+
+def test_plan_request_lets_a_person_pick_a_listed_license_instead():
+    planned = plan_request(
+        ScaffoldRequest(project_name="mypkg", license_id="EUPL-1.2"),
+        ScriptedAsker({"License": "MIT"}),
+    )
+    assert planned.license_id == "MIT"
 
 
 def test_plan_request_offers_a_listed_license_id_as_given():
     asker = ScriptedAsker()
     plan_request(ScaffoldRequest(project_name="mypkg", license_id="Apache-2.0"), asker)
     assert asker.asked["License"] == "Apache-2.0"
+    assert "SPDX license identifier" not in asker.asked
 
 
 def test_plan_request_skips_the_commit_message_when_the_commit_is_declined():
@@ -388,6 +412,40 @@ def test_every_offered_license_is_a_bare_identifier():
     assert licenses.CHOICES[-2:] == [licenses.OTHER_LICENSE, licenses.NO_LICENSE]
 
 
+# --- commit message -----------------------------------------------------------
+
+
+def test_initial_commit_message_defaults_when_the_flag_is_absent():
+    assert initial_commit_message(None) == DEFAULT_COMMIT_MESSAGE
+
+
+@pytest.mark.parametrize("supplied", ["", "   "])
+def test_initial_commit_message_honours_an_explicitly_empty_one(supplied):
+    """
+    Regression: `--message ''` fell back to the default, which left
+    `--non-interactive` no way to skip the commit at all.
+    """
+    assert initial_commit_message(supplied) is None
+
+
+def test_initial_commit_message_keeps_what_was_given():
+    assert initial_commit_message("  chore: start  ") == "chore: start"
+
+
+def test_declining_the_commit_declines_the_push_with_it():
+    planned = plan_request(
+        ScaffoldRequest(
+            project_name="mypkg",
+            commit_message=initial_commit_message(""),
+            remote="git@example.com:me/mypkg.git",
+            push=True,
+        ),
+        Defaults(),
+    )
+    assert planned.commit_message is None
+    assert planned.push is False
+
+
 # --- gitignore ---------------------------------------------------------------
 
 
@@ -423,6 +481,37 @@ def test_ensure_gitignore_tops_up_the_one_uv_wrote(tmp_path):
     assert set(REQUIRED_IGNORES) <= set(lines)
 
 
+@pytest.mark.parametrize("venv", ["venv", ".venv", None])
+def test_wanted_ignores_adds_nothing_for_the_offered_names(venv):
+    assert wanted_ignores(venv) == REQUIRED_IGNORES
+
+
+def test_wanted_ignores_covers_a_custom_environment_directory():
+    """
+    A `.gitignore` naming `venv/` while the project keeps its environment in
+    `env/` is wrong on its face, whatever uv's own nested ignore happens to do.
+    """
+    assert wanted_ignores("env") == [*REQUIRED_IGNORES, "env/"]
+
+
+def test_ensure_gitignore_ignores_a_custom_environment_directory(tmp_path):
+    root = project(tmp_path / "mypkg")
+    (root / GITIGNORE).write_text(FALLBACK_GITIGNORE)
+
+    assert ensure_gitignore(root, "env") == ["env/"]
+    assert "env/" in (root / GITIGNORE).read_text().splitlines()
+
+
+def test_ensure_gitignore_writes_a_custom_directory_into_a_fresh_file(tmp_path):
+    root = project(tmp_path / "mypkg")
+
+    assert ensure_gitignore(root, "env") == [*REQUIRED_IGNORES, "env/"]
+
+    lines = (root / GITIGNORE).read_text().splitlines()
+    assert set(REQUIRED_IGNORES) <= set(lines)
+    assert "env/" in lines
+
+
 def test_ensure_gitignore_adds_a_newline_before_appending(tmp_path):
     root = project(tmp_path / "mypkg")
     (root / GITIGNORE).write_text("dist/")
@@ -450,7 +539,7 @@ def test_run_scaffold_refuses_when_uv_init_fails(tmp_path):
             ScaffoldRequest(project_name="mypkg"),
             runner=runner,
             cwd=tmp_path,
-            configure=lambda _: None,
+            configure=lambda *_: None,
         )
 
 
@@ -468,7 +557,7 @@ def test_run_scaffold_creates_configures_and_commits(tmp_path):
         ),
         runner=runner,
         cwd=tmp_path,
-        configure=configured.append,
+        configure=lambda root, _: configured.append(root),
     )
 
     assert result.root == root.resolve()
@@ -498,7 +587,7 @@ def test_run_scaffold_renames_the_branch_git_init_chose(tmp_path):
         ScaffoldRequest(project_name="mypkg", branch="main"),
         runner=runner,
         cwd=tmp_path,
-        configure=lambda _: None,
+        configure=lambda *_: None,
         notify=notes.append,
     )
 
@@ -514,7 +603,7 @@ def test_run_scaffold_leaves_a_matching_branch_alone(tmp_path):
         ScaffoldRequest(project_name="mypkg", branch="main"),
         runner=runner,
         cwd=tmp_path,
-        configure=lambda _: None,
+        configure=lambda *_: None,
     )
     assert not runner.ran("branch -m")
 
@@ -528,7 +617,7 @@ def test_run_scaffold_configures_after_the_remote_so_the_branch_can_derive(tmp_p
     runner = uv_init_faker(root)
     order: list[str] = []
 
-    def configure(_: Path) -> None:
+    def configure(_: Path, __: str) -> None:
         order.append("configure")
 
     original = runner.run
@@ -572,7 +661,7 @@ def test_run_scaffold_pushes_with_an_upstream(tmp_path):
         ),
         runner=runner,
         cwd=tmp_path,
-        configure=lambda _: None,
+        configure=lambda *_: None,
     )
 
     assert result.pushed is True
@@ -589,7 +678,7 @@ def test_run_scaffold_does_not_push_without_a_commit(tmp_path):
         ),
         runner=runner,
         cwd=tmp_path,
-        configure=lambda _: None,
+        configure=lambda *_: None,
     )
 
     assert result.committed is False
@@ -608,7 +697,7 @@ def test_run_scaffold_keeps_an_existing_origin(tmp_path):
             ScaffoldRequest(project_name="mypkg", remote=url),
             runner=runner,
             cwd=tmp_path,
-            configure=lambda _: None,
+            configure=lambda *_: None,
             notify=notes.append,
         )
 
@@ -634,7 +723,7 @@ def test_run_scaffold_creates_the_venv_and_installs_into_it(tmp_path):
         ScaffoldRequest(project_name="mypkg", venv="venv", python="3.13"),
         runner=runner,
         cwd=tmp_path,
-        configure=lambda _: None,
+        configure=lambda *_: None,
         notify=notes.append,
     )
 
@@ -650,6 +739,61 @@ def test_run_scaffold_creates_the_venv_and_installs_into_it(tmp_path):
     assert any("venv" in note for note in notes)
 
 
+def test_run_scaffold_hands_the_settled_branch_to_configure(tmp_path):
+    """
+    Regression: the remote goes in before the config is written, so a remote
+    whose HEAD names another branch used to win and configure a release from a
+    branch the project was not on.
+    """
+    root = tmp_path / "mypkg"
+    runner = uv_init_faker(root, branch="master")
+    seen: list[str] = []
+
+    run_scaffold(
+        ScaffoldRequest(
+            project_name="mypkg",
+            branch="release",
+            remote="git@example.com:me/mypkg.git",
+        ),
+        runner=runner,
+        cwd=tmp_path,
+        configure=lambda _, settled: seen.append(settled),
+    )
+
+    assert seen == ["release"]
+
+
+def test_run_scaffold_ignores_the_environment_before_committing(tmp_path):
+    """
+    The ignore has to land in the commit, not after it.
+    """
+    root = tmp_path / "mypkg"
+    runner = uv_init_faker(root)
+    order: list[str] = []
+    original = runner.run
+
+    def run(command: str, env: dict[str, str] | None = None) -> t.Any:
+        if "commit -m" in command:
+            order.append("commit")
+        if "uv venv" in command:
+            order.append("venv")
+        return original(command, env)
+
+    runner.run = run  # type: ignore[method-assign]
+
+    run_scaffold(
+        ScaffoldRequest(
+            project_name="mypkg", venv="env", commit_message="chore: initial commit"
+        ),
+        runner=runner,
+        cwd=tmp_path,
+        configure=lambda *_: None,
+    )
+
+    assert order == ["commit", "venv"]
+    assert "env/" in (root / GITIGNORE).read_text().splitlines()
+
+
 def test_run_scaffold_makes_no_venv_when_none_was_asked_for(tmp_path):
     runner = uv_init_faker(tmp_path / "mypkg")
 
@@ -657,7 +801,7 @@ def test_run_scaffold_makes_no_venv_when_none_was_asked_for(tmp_path):
         ScaffoldRequest(project_name="mypkg"),
         runner=runner,
         cwd=tmp_path,
-        configure=lambda _: None,
+        configure=lambda *_: None,
     )
 
     assert result.venv is None
@@ -676,7 +820,7 @@ def test_run_scaffold_skips_the_install_when_the_venv_fails(tmp_path):
         ScaffoldRequest(project_name="mypkg", venv="venv"),
         runner=runner,
         cwd=tmp_path,
-        configure=lambda _: None,
+        configure=lambda *_: None,
         notify=notes.append,
     )
 
@@ -704,7 +848,7 @@ def test_run_scaffold_reports_a_failed_install_without_failing(tmp_path):
         ),
         runner=runner,
         cwd=tmp_path,
-        configure=lambda _: None,
+        configure=lambda *_: None,
         notify=notes.append,
     )
 
@@ -746,7 +890,7 @@ def test_run_scaffold_leaves_an_enclosing_repository_alone(tmp_path):
         ),
         runner=runner,
         cwd=tmp_path,
-        configure=lambda _: None,
+        configure=lambda *_: None,
         notify=notes.append,
     )
 
