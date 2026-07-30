@@ -5,7 +5,7 @@
 Vommit automates version bumps, changelogs, Git releases, builds, and
 publishing for uv-based Python packages using Conventional Commits.
 
-Vommit requires Python 3.13 or newer, [uv](https://docs.astral.sh/uv/) 0.7 or
+Vommit requires Python 3.12 or newer, [uv](https://docs.astral.sh/uv/) 0.7 or
 newer, and a static `[project].version` in `pyproject.toml`. Automatic version selection and
 the default release workflow also expect a Git repository, but this can be
 disabled via config.
