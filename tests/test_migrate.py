@@ -196,7 +196,8 @@ def test_endow(tmp_path):
 
     assert config.git.branch == "master"
     assert config.commands.build == "hatch build"
-    assert config.pypi.enabled is False
+    # v7 was not uploading, but something else was: publishing stays on
+    assert config.pypi.enabled is True
     assert migration.version_files == [
         VersionFile(path="src/endow/__about__.py", variable="__version__")
     ]
@@ -214,7 +215,9 @@ def test_endow_key_paths_feed_the_interactive_flow(tmp_path):
 
     key_paths = translate(raw).key_paths
 
-    assert {"git.branch", "commands.build", "pypi.enabled"} <= key_paths
+    assert {"git.branch", "commands.build"} <= key_paths
+    # left unanswered on purpose, so the interactive flow asks about publishing
+    assert "pypi.enabled" not in key_paths
     assert key_paths <= Config.interactive_key_paths()
 
 
@@ -268,16 +271,23 @@ def test_remove_dist_off_drops_the_clean_step(tmp_path):
     assert config.commands.build == "uv build"
 
 
-def test_either_upload_switch_disables_publishing(tmp_path):
-    assert translate(psr(tmp_path)).config.pypi.enabled is True
-    assert (
-        translate(psr(tmp_path, "upload_to_pypi = false\n")).config.pypi.enabled
-        is False
-    )
-    assert (
-        translate(psr(tmp_path, "upload_to_repository = false\n")).config.pypi.enabled
-        is False
-    )
+def test_either_upload_switch_is_reported_without_disabling_publishing(tmp_path):
+    """
+    v7's switch named the uploader, not whether the project published at all, so
+    honouring it would silently drop a step CI or twine used to perform.
+    """
+    untouched = translate(psr(tmp_path))
+    assert untouched.config.pypi.enabled is True
+    assert "upload_to_pypi" not in notes(untouched.report.lossy)
+    assert "upload_to_repository" not in notes(untouched.report.lossy)
+
+    for switch in ("upload_to_pypi", "upload_to_repository"):
+        migration = translate(psr(tmp_path, f"{switch} = false\n"))
+
+        assert migration.config.pypi.enabled is True
+        assert "vommit publishes by default" in notes(migration.report.lossy)[switch]
+        # unanswered, so `migrate --interactive` asks instead of skipping it
+        assert "pypi.enabled" not in migration.key_paths
 
 
 def test_build_command_is_only_taken_when_it_was_written_down(tmp_path):

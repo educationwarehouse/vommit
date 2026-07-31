@@ -240,6 +240,14 @@ Nothing is written before that choice. Use `--yes` to accept the translation,
 Unsupported configurations are reported rather than silently discarded. Only
 `pyproject.toml` is read; `setup.cfg` is not supported.
 
+`upload_to_pypi = false` and `upload_to_repository = false` are reported rather
+than carried across. In v7 they usually said that something else did the
+uploading — CI, twine, hatch — rather than that the project never published, and
+Vommit owns the whole release, so honouring them would drop a step nobody else
+performs any more. Publishing therefore stays on by default; an interactive
+migration asks, and `pypi.enabled = false` turns it off for a project that
+genuinely publishes nothing.
+
 If the project has a dynamic version, Hatchling and setuptools projects can be
 fixed during migration: the current version is frozen into
 `[project].version`, the backend hook is removed, and configured version files

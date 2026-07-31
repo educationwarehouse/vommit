@@ -730,6 +730,17 @@ def _translate_commands(work: _Translation) -> None:
 def _translate_pypi(work: _Translation) -> None:
     """
     v7 had two switches for one thing; either one being off means no upload.
+
+    Off rarely meant "this project does not publish". v7's uploader was poor
+    enough that projects turned it off and published from CI, twine or hatch
+    instead, so the switch says who uploaded rather than whether anyone did.
+    vommit owns the whole release, which makes carrying the `false` across a
+    quiet way to drop a step somebody else used to perform.
+
+    So the value is left at vommit's default -- publishing on -- and the change
+    is reported rather than made silently. Deliberately not `assign`: that would
+    record `pypi.enabled` as answered and an interactive migration would skip
+    the question. Left unanswered, it is asked, pre-filled with the default.
     """
     keys = [
         key
@@ -737,11 +748,10 @@ def _translate_pypi(work: _Translation) -> None:
         if not work.get(key) and work.is_explicit(key)
     ]
     if keys:
-        work.assign(
+        work.note_lossy(
             " / ".join(keys),
-            "pypi.enabled",
-            False,
-            detail="publishing stays off (pypi.enabled = false)",
+            "v7 uploaded nothing, so something else did; vommit publishes by "
+            "default now. Set pypi.enabled = false to keep publishing off.",
         )
 
 
