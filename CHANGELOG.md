@@ -2,6 +2,11 @@
 
 <!-- next-version-placeholder -->
 
+## v0.1.1 (2026-08-03)
+
+### Fix
+* **migrate:** preserve publishing during v7 config migration
+
 ## v0.1.0 (2026-07-30)
 
 ### Features
