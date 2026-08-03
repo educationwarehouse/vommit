@@ -304,6 +304,114 @@ def test_write_to_pyproject_collapses_disabled_sections(tmp_path):
     assert Config.from_pyproject_path(pyproject).pypi.enabled is False
 
 
+OUT_OF_ORDER = """[tool.hatch.build]
+packages = ["src/vommit"]
+
+[project]
+name = "x"
+version = "1.0.0"
+
+# what v7 was told to do
+[tool.semantic_release]
+version_variable = "src/x/__about__.py:__version__"
+
+[tool.ruff]
+line-length = 88
+"""
+
+
+def _headers(pyproject: Path) -> list[str]:
+    return [
+        line
+        for line in pyproject.read_text().splitlines()
+        if line.startswith("[") and not line.startswith("[tool.vommit.")
+    ]
+
+
+def test_a_new_table_goes_to_the_end_rather_than_the_first_tool_block(tmp_path):
+    """
+    Left to tomlkit, a new `tool` child joins the first `[tool.*]` block in the
+    file, which on a pyproject that opens with `[tool.hatch]` is above
+    `[project]`.
+    """
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(OUT_OF_ORDER)
+
+    Config.default().write_to_pyproject(pyproject)
+
+    assert _headers(pyproject) == [
+        "[tool.hatch.build]",
+        "[project]",
+        "[tool.semantic_release]",
+        "[tool.ruff]",
+        "[tool.vommit]",
+    ]
+    assert Config.from_pyproject_path(pyproject).confirm is True
+
+
+def test_a_new_table_takes_over_the_slot_of_the_key_it_replaces(tmp_path):
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(OUT_OF_ORDER)
+
+    Config.default().write_to_pyproject(pyproject, replaces="tool.semantic_release")
+
+    assert _headers(pyproject) == [
+        "[tool.hatch.build]",
+        "[project]",
+        "[tool.vommit]",
+        "[tool.semantic_release]",
+        "[tool.ruff]",
+    ]
+    written = pyproject.read_text()
+    # the table it displaces keeps the blank line above its header
+    assert "\n\n[tool.semantic_release]" in written
+    assert Config.from_pyproject_path(pyproject).confirm is True
+
+
+@pytest.mark.parametrize(
+    "replaces",
+    [
+        "tool.semantic_release",  # not in the file
+        "build-system",  # there, but not a sibling of tool.vommit
+    ],
+)
+def test_a_replacement_key_with_no_slot_falls_back_to_the_end(tmp_path, replaces):
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        "[build-system]\nrequires = []\n\n[tool.hatch]\nx = 1\n\n[project]\nname = 'x'\n"
+    )
+
+    Config.default().write_to_pyproject(pyproject, replaces=replaces)
+
+    assert _headers(pyproject) == [
+        "[build-system]",
+        "[tool.hatch]",
+        "[project]",
+        "[tool.vommit]",
+    ]
+
+
+def test_an_existing_table_is_merged_where_it_stands(tmp_path):
+    """
+    `replaces` only decides where a *new* table goes; one the project has been
+    editing is left where the project put it.
+    """
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        "[tool.vommit]\nconfirm = false\n\n[project]\nname = 'x'\n\n"
+        "[tool.semantic_release]\nbranch = 'master'\n"
+    )
+
+    Config.default().write_to_pyproject(pyproject, replaces="tool.semantic_release")
+
+    assert _headers(pyproject) == [
+        "[tool.vommit]",
+        "[project]",
+        "[tool.semantic_release]",
+    ]
+    assert Config.from_pyproject_path(pyproject).confirm is True
+
+
 def test_config_introspection_helpers(tmp_path):
     pyproject = tmp_path / "pyproject.toml"
 

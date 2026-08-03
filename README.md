@@ -175,10 +175,11 @@ vommit bump
 ```
 
 `bump` derives the version change from Conventional Commit messages since the
-last release: breaking changes are major, `feat` is minor, and `fix`, `perf`,
-and `docs` are patch by default. A `!` in a commit header or a `BREAKING CHANGE`
-footer counts as a breaking change; set `allow_breaking_bang` or
-`allow_breaking_footer` to `false` to ignore either. Use the version-selection,
+last release: breaking changes are major, `feat` is minor, and `fix` and `perf`
+are patch by default. Any other type, `docs` included, bumps nothing on its own;
+add it to `version_bump_map` to change that. A `!` in a commit header or a
+`BREAKING CHANGE` footer counts as a breaking change; set `allow_breaking_bang`
+or `allow_breaking_footer` to `false` to ignore either. Use the version-selection,
 `--prerelease`, `--allow-dirty`, `--noop`, and `--yes` flags to override or
 preview the result.
 
@@ -256,5 +257,7 @@ from importlib.metadata import version
 __version__ = version(__package__)
 ```
 
-The migration can then remove `[tool.semantic_release]` and the
+`[tool.vommit]` is written into the place `[tool.semantic_release]` held, so the
+file keeps its shape; without a v7 table to stand in for, a new `[tool.vommit]`
+goes at the end. The migration can then remove `[tool.semantic_release]` and the
 `python-semantic-release` dependency.

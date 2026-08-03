@@ -742,8 +742,9 @@ def _translate_pypi(work: _Translation) -> None:
     if keys:
         work.note_lossy(
             " / ".join(keys),
-            "v7 uploaded nothing, so something else did; vommit publishes by "
-            "default now. Set pypi.enabled = false to keep publishing off.",
+            "publishing stays on, because vommit publishes by default and v7's "
+            "off switch usually meant CI or twine did the upload. Set "
+            "pypi.enabled = false to keep it off.",
         )
 
 
@@ -785,8 +786,10 @@ def _translate_bumps(work: _Translation) -> None:
     if dropped := [name for name in Config.version_bump_map if name not in bumps]:
         work.note_lossy(
             "parser_angular_*",
-            f"vommit releases on {', '.join(dropped)} by default, v7 did not; "
-            f"use `vommit bump --patch` when you want one anyway",
+            f"{', '.join(dropped)} stay out of version_bump_map, as in v7, so "
+            f"such a commit alone bumps nothing; vommit's own default does bump "
+            f"on them. Add them to the map, or run `vommit bump --patch` for a "
+            f"one-off release.",
         )
 
 

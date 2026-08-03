@@ -12,6 +12,7 @@ from src.vommit.migrate import (
     METADATA_IMPORT,
     MigrationReport,
     Note,
+    PSR_KEY,
     Raw,
     VersionFile,
     VersionTransform,
@@ -136,7 +137,7 @@ def test_an_empty_v7_config_still_translates_v7_behaviour(tmp_path):
     assert config.git.tag_format == "v{version}"
     assert config.git.commit_format == "{version}"
 
-    # v7's default parser did not release on docs; vommit's default map does
+    # neither v7's default parser nor vommit's default map releases on docs
     assert "docs" not in config.version_bump_map
     assert config.version_bump_map == {
         BREAKING: "major",
@@ -180,10 +181,30 @@ def test_a_branch_the_project_wrote_down_is_pinned(tmp_path):
 
 
 def test_the_dropped_bump_types_point_at_the_override(tmp_path):
+    report = translate(
+        psr(
+            tmp_path,
+            """
+            parser_angular_allowed_types = 'feat,chore'
+            parser_angular_minor_types = 'feat'
+            parser_angular_patch_types = ''
+            """,
+        )
+    ).report
+    note = notes(report.lossy)["parser_angular_*"]
+
+    # says what was decided before it says what vommit would have done
+    assert note.startswith("fix, perf stay out of version_bump_map")
+    assert "vommit bump --patch" in note
+
+
+def test_a_v7_default_that_matches_vommit_is_not_reported(tmp_path):
+    """
+    Neither releases on docs any more, so there is nothing to warn about.
+    """
     report = translate(psr(tmp_path)).report
 
-    assert "docs" in notes(report.lossy)["parser_angular_*"]
-    assert "vommit bump --patch" in notes(report.lossy)["parser_angular_*"]
+    assert "parser_angular_*" not in notes(report.lossy)
 
 
 def test_endow(tmp_path):
@@ -1094,6 +1115,35 @@ def test_commit_author_is_no_longer_reported_as_unsupported(tmp_path):
 
     assert "commit_author" not in notes(report.unsupported)
     assert "commit_author" not in notes(report.lossy)
+
+
+def test_the_migrated_config_lands_where_the_v7_config_was(tmp_path):
+    """
+    What `migrate` does end to end: write, then strip. The new table should come
+    out at the old one's place, not shoved to the top of the file next to
+    `[tool.hatch]`.
+    """
+    pyproject = write(tmp_path, ENDOW + "\n[tool.ruff]\nline-length = 88\n")
+    raw = read_psr(pyproject)
+    assert raw is not None
+
+    translate(raw).config.write_to_pyproject(pyproject, replaces=PSR_KEY)
+    strip_psr(pyproject)
+
+    headers = [
+        line
+        for line in pyproject.read_text().splitlines()
+        if line.startswith("[") and not line.startswith("[tool.vommit.")
+    ]
+    assert headers == [
+        "[build-system]",
+        "[project]",
+        "[project.optional-dependencies]",
+        "[tool.hatch.version]",
+        "[tool.vommit]",
+        "[tool.ruff]",
+    ]
+    assert Config.from_pyproject_path(pyproject).git.branch == "master"
 
 
 def test_stripping_endow(tmp_path):

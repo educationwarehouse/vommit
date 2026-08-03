@@ -76,6 +76,66 @@ def _get_nested_mapping(node: t.Any, dotted_key: str) -> dict[str, t.Any] | None
     return current if isinstance(current, dict) else None
 
 
+def _sibling_slot(
+    document: t.Any,
+    key_parts: list[str],
+    replaces: str,
+) -> tuple[t.Any, int] | None:
+    """
+    The container and index `replaces` occupies, so a new key can take its spot.
+
+    Siblings under one parent table only, `tool.vommit` for `tool.semantic_release`:
+    a key under some other parent has no slot here to take over. `body` and
+    `_insert_at` are tomlkit internals, but they are the only way to say *where* a
+    table goes; the public `append` lands at the end of whichever block it picks.
+    """
+    parent, _, name = replaces.rpartition(".")
+    if len(key_parts) != 2 or parent != key_parts[0]:
+        return None
+
+    # one body entry per physical block, so this finds the block that holds
+    # `name` rather than the first `[tool.*]` in the file
+    for key, item in document.body:
+        if key is None or key.key != parent or not isinstance(item, dict):
+            continue
+
+        container = item.value
+        for index, (child_key, _child) in enumerate(container.body):
+            if child_key is not None and child_key.key == name:
+                return container, index
+
+    return None
+
+
+def _place_new_toml_block(
+    document: t.Any,
+    key_parts: list[str],
+    table: t.Any,
+    replaces: str | None,
+) -> None:
+    """
+    Put a table the file does not have yet somewhere a reader would look for it.
+
+    Left to itself, tomlkit hangs a new `tool.*` child on the *first* physical
+    `[tool]` block, which on a file that opens with `[tool.hatch]` writes our
+    config above `[project]`. So: the spot `replaces` had, or the end of the
+    file, and never a guess.
+    """
+    if replaces and (slot := _sibling_slot(document, key_parts, replaces)):
+        container, index = slot
+        # keeps the blank line between us and whatever follows
+        table.add(tomlkit.nl())
+        container._insert_at(index, key_parts[-1], table)
+        return
+
+    node = table
+    for part in reversed(key_parts[1:]):
+        wrapper = tomlkit.table(is_super_table=True)
+        wrapper.append(part, node)
+        node = wrapper
+    document.append(key_parts[0], node)
+
+
 def _collect_leaf_key_paths(data: dict[str, t.Any], prefix: str = "") -> set[str]:
     paths: set[str] = set()
     for key, value in data.items():
@@ -328,12 +388,14 @@ class Config(InteractiveConfig, Defaultable):
 
     confirm: t.Annotated[bool, "Ask before writing a release?"] = True
 
+    # `docs` is deliberately absent: a documentation-only change is not worth a
+    # release. A project that wants one adds `docs = "patch"` to this table;
+    # `setup` writes the whole map out, so there is something to edit.
     version_bump_map: dict[str, VersionBump] = {
         BREAKING: "major",
         "feat": "minor",
         "fix": "patch",
         "perf": "patch",
-        "docs": "patch",
     }
 
     @property
@@ -464,7 +526,16 @@ class Config(InteractiveConfig, Defaultable):
         self,
         pyproject: str | Path | None = None,
         toml_key: str = TOML_KEY,
+        replaces: str | None = None,
     ) -> None:
+        """
+        Write the config, merging into an existing table or adding a new one.
+
+        `replaces` names a key the new table should stand in for -- the config it
+        supersedes -- so a migration lands where the old one was instead of at
+        the end of the file. Ignored once `toml_key` is already there: a table
+        the project has been editing is not worth moving.
+        """
         pyproject_path = (
             Path(pyproject) if pyproject is not None else Path.cwd() / "pyproject.toml"
         )
@@ -472,15 +543,17 @@ class Config(InteractiveConfig, Defaultable):
             read_toml(pyproject_path) if pyproject_path.exists() else tomlkit.document()
         )
 
-        key_parts = toml_key.split(".")
-        target = doc
-        for part in key_parts[:-1]:
-            target = _ensure_toml_table(target, part)
-
         # write toml in a way that we keep comments, whitespace intact:
 
-        root = _ensure_toml_table(target, key_parts[-1])
+        key_parts = toml_key.split(".")
         payload = _to_plain_mapping(self)
-        _merge_toml_table_in_place(root, payload)
+
+        if (root := _get_nested_mapping(doc, toml_key)) is not None:
+            _merge_toml_table_in_place(root, payload)
+        else:
+            # filled before placing it: a trailing newline has to come last
+            fresh = tomlkit.table()
+            _merge_toml_table_in_place(fresh, payload)
+            _place_new_toml_block(doc, key_parts, fresh, replaces)
 
         pyproject_path.write_text(tomlkit.dumps(doc) + "\n")

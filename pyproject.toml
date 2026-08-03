@@ -115,7 +115,6 @@ break = "major"
 feat = "minor"
 fix = "patch"
 perf = "patch"
-docs = "patch"
 
 
 

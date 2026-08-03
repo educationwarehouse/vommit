@@ -432,12 +432,13 @@ def _write_config(
     root: Path,
     pyproject: Path,
     branch: str | None = None,
+    replaces: str | None = None,
 ) -> None:
     """
     The tail every setup path shares: pin the branch, write, make a changelog.
     """
     _pin_branch(c, config, root, branch)
-    config.write_to_pyproject(pyproject)
+    config.write_to_pyproject(pyproject, replaces=replaces)
     if changelog := config.active_changelog:
         Changelog(settings=changelog, root=root).ensure()
 
@@ -486,7 +487,9 @@ def migrate(
             rich.print("[yellow]Stopped; nothing was written.[/yellow]")
             return
 
-        _write_config(c, config, root, pyproject)
+        # written into the v7 table's place, so the file keeps its shape and the
+        # config a reader is looking for is where the old one was
+        _write_config(c, config, root, pyproject, replaces=PSR_KEY)
         rich.print(f"[green]Wrote[/green] {escape(f'[{TOML_KEY}]')} to {pyproject}")
 
         _apply_version_plan(plan, root, pyproject, yes)
