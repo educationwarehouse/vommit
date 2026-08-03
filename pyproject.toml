@@ -6,7 +6,7 @@ readme = "README.md"
 authors = [
     { name = "Robin van der Noord", email = "robinvandernoord@gmail.com" }
 ]
-requires-python = ">=3.13"
+requires-python = ">=3.12"
 dependencies = [
     "configuraptor >= 2.5.4, < 3",
     "ewok >= 0.5.2, < 1",

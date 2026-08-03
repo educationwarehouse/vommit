@@ -729,7 +729,10 @@ def _translate_commands(work: _Translation) -> None:
 
 def _translate_pypi(work: _Translation) -> None:
     """
-    v7 had two switches for one thing; either one being off means no upload.
+    v7's off switches usually meant CI or twine did the uploading, not that
+    the project never published, so publishing stays on and the change is
+    reported. Not `assign`: leaving `pypi.enabled` unanswered keeps the
+    interactive migration asking about it.
     """
     keys = [
         key
@@ -737,11 +740,10 @@ def _translate_pypi(work: _Translation) -> None:
         if not work.get(key) and work.is_explicit(key)
     ]
     if keys:
-        work.assign(
+        work.note_lossy(
             " / ".join(keys),
-            "pypi.enabled",
-            False,
-            detail="publishing stays off (pypi.enabled = false)",
+            "v7 uploaded nothing, so something else did; vommit publishes by "
+            "default now. Set pypi.enabled = false to keep publishing off.",
         )
 
 

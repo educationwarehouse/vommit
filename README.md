@@ -5,7 +5,7 @@
 Vommit automates version bumps, changelogs, Git releases, builds, and
 publishing for uv-based Python packages using Conventional Commits.
 
-Vommit requires Python 3.13 or newer, [uv](https://docs.astral.sh/uv/) 0.7 or
+Vommit requires Python 3.12 or newer, [uv](https://docs.astral.sh/uv/) 0.7 or
 newer, and a static `[project].version` in `pyproject.toml`. Automatic version selection and
 the default release workflow also expect a Git repository, but this can be
 disabled via config.
@@ -78,7 +78,7 @@ the project is already made, so create it later with `uv venv` yourself.
 
 Run inside an existing repository, `uv init` creates no repository of its own.
 Vommit then leaves that history, branch and remote alone, makes no commit, and
-writes the `.gitignore` uv skipped — without it a release would commit its own
+writes the `.gitignore` uv skipped: without it a release would commit its own
 `dist/`.
 
 ## Releasing
@@ -239,6 +239,11 @@ Nothing is written before that choice. Use `--yes` to accept the translation,
 
 Unsupported configurations are reported rather than silently discarded. Only
 `pyproject.toml` is read; `setup.cfg` is not supported.
+
+`upload_to_pypi = false` and `upload_to_repository = false` are reported rather
+than carried across: in v7 they usually meant CI or twine did the uploading,
+not that the project never published. Publishing stays on by default, an
+interactive migration asks, and `pypi.enabled = false` turns it off.
 
 If the project has a dynamic version, Hatchling and setuptools projects can be
 fixed during migration: the current version is frozen into
