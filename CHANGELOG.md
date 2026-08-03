@@ -2,6 +2,11 @@
 
 <!-- next-version-placeholder -->
 
+## v0.1.2 (2026-08-03)
+
+### Fix
+* **migration:** preserve config layout and bump defaults
+
 ## v0.1.1 (2026-08-03)
 
 ### Fix
