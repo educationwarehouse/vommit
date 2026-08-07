@@ -393,7 +393,7 @@ def setup(
 
         _write_config(c, config, root, pyproject, branch)
         # a crate-backed project keeps `dynamic = ["version"]` on purpose, so the
-        # offer below -- which exists to make [project].version bumpable -- has
+        # offer below, which exists to make [project].version bumpable, has
         # nothing to fix and would report the deliberate shape as a problem
         if _report_version_source(c, root):
             _offer_version_files(root, pyproject, non_interactive)
@@ -620,7 +620,7 @@ def _apply_version_plan(
 
     if plan.transform:
         apply_static_version(pyproject, plan.transform)
-    result = rewrite_version_files(plan.rewrites, root)
+    result = rewrite_version_files(plan.rewrites, root, plan.distribution)
 
     for path in result.changed:
         rich.print(f"[green]Rewrote[/green] {escape(relative_path(path, root))}")
