@@ -2,6 +2,11 @@
 
 <!-- next-version-placeholder -->
 
+## v0.2.1 (2026-08-07)
+
+### Fix
+* improved maturin support for repo's that use git-dependencies
+
 ## v0.2.0 (2026-08-07)
 
 ### Feature
