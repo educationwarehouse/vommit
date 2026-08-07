@@ -215,6 +215,33 @@ def test_version_source_picks_the_crate_for_a_dynamic_maturin_project(tmp_path):
     assert source.lockfile_name == "Cargo.lock"
 
 
+def test_version_source_honors_a_configured_manifest_path(tmp_path):
+    """
+    maturin's `[tool.maturin].manifest-path` puts the crate below the project
+    root; the version and its lockfile live with that crate, not at the root.
+    """
+    root = crate(tmp_path, version=None)
+    (root / "pyproject.toml").write_text(
+        MATURIN_PYPROJECT + '\n[tool.maturin]\nmanifest-path = "rust/Cargo.toml"\n'
+    )
+    rust = root / "rust"
+    rust.mkdir()
+    (rust / "Cargo.toml").write_text(CARGO.format(version="3.10.27"))
+    (rust / "Cargo.lock").write_text("")
+
+    runner = FakeRunner().reply("uv", stdout='{"version": "3.11.0"}')
+    source = version_source(runner, root)
+
+    assert isinstance(source, CargoProject)
+    assert source.manifest == rust / "Cargo.toml"
+    assert source.lockfile == rust / "Cargo.lock"
+
+    source.apply_bump("minor")
+    assert source.current_version() == "3.11.0"
+    update = "cargo update --workspace --offline"
+    assert runner.ran(f"{update} --manifest-path {rust / 'Cargo.toml'}")
+
+
 @pytest.mark.parametrize(
     "reason, pyproject, version",
     [

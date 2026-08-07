@@ -345,6 +345,19 @@ class CargoProject(VersionSource):
 
     manifest_name: t.ClassVar[str] = CARGO
     lockfile_name: t.ClassVar[str] = "Cargo.lock"
+    #: maturin's `[tool.maturin].manifest-path`, when the crate is not at root.
+    manifest_path: Path | None = None
+
+    @property
+    def manifest(self) -> Path:
+        return self.manifest_path or super().manifest
+
+    @property
+    def lockfile(self) -> Path:
+        if self.manifest_path is None:
+            return super().lockfile
+        else:
+            return self.manifest_path.parent / self.lockfile_name
 
     def version_in(self, manifest: str) -> str | None:
         package = tomlkit.parse(manifest).get("package")
@@ -429,10 +442,29 @@ def version_source(runner: Runner, root: Path) -> VersionSource:
     Anything else -- including a Python package that merely happens to vendor a
     crate -- keeps `[project].version`, because that is still what gets built.
     """
-    cargo = CargoProject(runner=runner, root=root)
-    if _is_dynamic_maturin(root / PYPROJECT) and cargo.current_version():
+    pyproject = root / PYPROJECT
+    cargo = CargoProject(
+        runner=runner,
+        root=root,
+        manifest_path=_maturin_manifest(pyproject),
+    )
+    if _is_dynamic_maturin(pyproject) and cargo.current_version():
         return cargo
     return UvProject(runner=runner, root=root)
+
+
+def _maturin_manifest(pyproject: Path) -> Path | None:
+    """
+    The crate maturin is configured to build, if it is not the root Cargo.toml.
+    """
+    if not pyproject.exists():
+        return None
+    tool = tomlkit.parse(pyproject.read_text()).get("tool")
+    maturin = tool.get("maturin") if isinstance(tool, dict) else None
+    configured = (
+        maturin.get("manifest-path") if isinstance(maturin, dict) else None
+    )
+    return pyproject.parent / str(configured) if configured else None
 
 
 def _is_dynamic_maturin(pyproject: Path) -> bool:
