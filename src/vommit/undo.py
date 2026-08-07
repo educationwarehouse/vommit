@@ -8,7 +8,7 @@ from .config import Config
 from .errors import VommitError
 from .git import GitRepo
 from .shell import Runner
-from .versioning import UvProject
+from .versioning import VersionSource, version_source
 
 
 @dc.dataclass(frozen=True)
@@ -27,6 +27,10 @@ class UndoPlan:
     commit: str | None = None
     previous_commit: str | None = None
     changelog_path: Path | None = None
+    # named rather than assumed: a crate-backed project bumps Cargo.toml and
+    # Cargo.lock, so those are the files an undo has to put back
+    manifest: str = PYPROJECT
+    lockfile: str = LOCKFILE
 
     @property
     def rewinds_history(self) -> bool:
@@ -37,7 +41,7 @@ class UndoPlan:
         if self.rewinds_history:
             return ()
         changelog = (str(self.changelog_path),) if self.changelog_path else ()
-        return (PYPROJECT, LOCKFILE, *changelog)
+        return (self.manifest, self.lockfile, *changelog)
 
 
 @dc.dataclass(frozen=True)
@@ -51,7 +55,7 @@ Confirm = t.Callable[[UndoResult], bool]
 
 
 def plan_undo(
-    config: Config, repo: GitRepo, project: UvProject, root: Path
+    config: Config, repo: GitRepo, project: VersionSource, root: Path
 ) -> UndoPlan:
     """
     Work out what the last release left behind, and refuse if it cannot go.
@@ -59,9 +63,10 @@ def plan_undo(
     Everything here is a read: the checks all run before the first write, so a
     published tag or an unreadable version leaves the project exactly as it was.
     """
+    manifest = project.manifest_name
     version = project.current_version()
     if not version:
-        raise VommitError(f"No version found in {PYPROJECT}; there is nothing to undo.")
+        raise VommitError(f"No version found in {manifest}; there is nothing to undo.")
 
     git = config.git
     tag = _released_tag(repo, git.format_tag(version) if git else None)
@@ -82,7 +87,7 @@ def plan_undo(
     previous = _previous_version(repo, project, previous_commit)
     if previous == version:
         raise VommitError(
-            f"{PYPROJECT} already says {version} at {previous_commit}; "
+            f"{manifest} already says {version} at {previous_commit}; "
             "there is no release here to undo."
         )
 
@@ -93,6 +98,8 @@ def plan_undo(
         commit=commit,
         previous_commit=previous_commit,
         changelog_path=_entry_to_remove(config, root, version) if not commit else None,
+        manifest=manifest,
+        lockfile=project.lockfile_name,
     )
 
 
@@ -112,7 +119,7 @@ def run_undo(
     unrelated edits in those files alone.
     """
     repo = GitRepo(runner=runner, root=root)
-    project = UvProject(runner=runner, root=root)
+    project = version_source(runner, root)
 
     plan = plan_undo(config, repo, project, root)
     result = UndoResult(plan=plan, noop=noop)
@@ -153,12 +160,13 @@ def _release_commit(repo: GitRepo, expected_subject: str | None) -> str | None:
     return subject if subject == expected_subject else None
 
 
-def _previous_version(repo: GitRepo, project: UvProject, ref: str) -> str:
-    content = repo.file_at(ref, PYPROJECT)
+def _previous_version(repo: GitRepo, project: VersionSource, ref: str) -> str:
+    manifest = project.manifest_name
+    content = repo.file_at(ref, manifest)
     version = project.version_in(content) if content else None
     if not version:
         raise VommitError(
-            f"Could not read the version from {PYPROJECT} at {ref}, "
+            f"Could not read the version from {manifest} at {ref}, "
             "so there is nothing to go back to."
         )
     return version
@@ -183,15 +191,16 @@ def _entry_to_remove(config: Config, root: Path, version: str) -> Path | None:
 def _restore_files(
     config: Config,
     repo: GitRepo,
-    project: UvProject,
+    project: VersionSource,
     root: Path,
     plan: UndoPlan,
 ) -> None:
     """
     Reverse the writes a bump made, without reaching for the whole file.
 
-    `uv version` rewrites the version field and relocks, so `uv.lock` follows
-    along; the changelog entry is cut out by the changelog's own matcher.
+    Setting the version back rewrites the version field and relocks, so the
+    lockfile follows along; the changelog entry is cut out by the changelog's
+    own matcher.
     """
     if plan.changelog_path and (settings := config.active_changelog):
         changelog = Changelog(settings=settings, root=root)

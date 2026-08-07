@@ -30,9 +30,7 @@ from .config import CommandConfig, Config, GitConfig
 from .errors import VommitError
 from .git import GitRepo
 from .shell import CommandResult, Runner, shell
-from .versioning import UvProject
-
-PYPROJECT = "pyproject.toml"
+from .versioning import VersionSource, version_source
 
 CLEAN = "clean"
 BUILD = "build"
@@ -71,16 +69,6 @@ class Step:
 class ReleaseRequest:
     bump: BumpRequest
     no_bump: bool = False
-
-    def __post_init__(self) -> None:
-        if not self.no_bump:
-            return
-        # --allow-dirty stays allowed: the build still runs, and it may well
-        # have something to say about an unclean tree
-        reject_flags(
-            self.bump.targeting_flags(include_dirty=False),
-            f"--no-bump publishes the version already in {PYPROJECT}",
-        )
 
     @property
     def noop(self) -> bool:
@@ -151,7 +139,15 @@ def run_release(
     itself was declined.
     """
     repo = GitRepo(runner=runner, root=root)
-    project = UvProject(runner=runner, root=root)
+    project = version_source(runner, root)
+
+    if request.no_bump:
+        # --allow-dirty stays allowed: the build still runs, and it may well
+        # have something to say about an unclean tree
+        reject_flags(
+            request.bump.targeting_flags(include_dirty=False),
+            f"--no-bump publishes the version already in {project.manifest_name}",
+        )
 
     git = config.active_git
     commands = config.commands
@@ -304,11 +300,11 @@ def _stale_tag(repo: GitRepo, git: GitConfig, version: str) -> "StaleTag | None"
     )
 
 
-def _current_version(project: UvProject) -> str:
+def _current_version(project: VersionSource) -> str:
     version = project.current_version()
     if not version:
         raise VommitError(
-            f"No version found in {PYPROJECT}; there is nothing to release."
+            f"No version found in {project.manifest_name}; there is nothing to release."
         )
     return version
 

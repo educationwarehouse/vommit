@@ -84,19 +84,19 @@ def remote_tags(sandbox: Sandbox) -> list[str]:
 # --- request validation ------------------------------------------------------
 
 
-def test_no_bump_rejects_a_level():
+def test_no_bump_rejects_a_level(sandbox: Sandbox):
     with pytest.raises(VommitError, match="drop --minor"):
-        ReleaseRequest(bump=BumpRequest(level="minor"), no_bump=True)
+        release(sandbox, no_bump=True, level="minor")
 
 
-def test_no_bump_rejects_an_explicit_version():
+def test_no_bump_rejects_an_explicit_version(sandbox: Sandbox):
     with pytest.raises(VommitError, match="drop --version"):
-        ReleaseRequest(bump=BumpRequest(version="2.0.0"), no_bump=True)
+        release(sandbox, no_bump=True, version="2.0.0")
 
 
-def test_no_bump_rejects_prerelease():
+def test_no_bump_rejects_prerelease(sandbox: Sandbox):
     with pytest.raises(VommitError, match="drop --prerelease"):
-        ReleaseRequest(bump=BumpRequest(prerelease=True), no_bump=True)
+        release(sandbox, no_bump=True, prerelease=True)
 
 
 def test_a_plain_request_is_accepted():
