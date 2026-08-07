@@ -32,8 +32,6 @@ from .git import GitRepo
 from .shell import CommandResult, Runner, shell
 from .versioning import VersionSource, version_source
 
-PYPROJECT = "pyproject.toml"
-
 CLEAN = "clean"
 BUILD = "build"
 PUBLISH = "publish"
@@ -71,16 +69,6 @@ class Step:
 class ReleaseRequest:
     bump: BumpRequest
     no_bump: bool = False
-
-    def __post_init__(self) -> None:
-        if not self.no_bump:
-            return
-        # --allow-dirty stays allowed: the build still runs, and it may well
-        # have something to say about an unclean tree
-        reject_flags(
-            self.bump.targeting_flags(include_dirty=False),
-            f"--no-bump publishes the version already in {PYPROJECT}",
-        )
 
     @property
     def noop(self) -> bool:
@@ -152,6 +140,14 @@ def run_release(
     """
     repo = GitRepo(runner=runner, root=root)
     project = version_source(runner, root)
+
+    if request.no_bump:
+        # --allow-dirty stays allowed: the build still runs, and it may well
+        # have something to say about an unclean tree
+        reject_flags(
+            request.bump.targeting_flags(include_dirty=False),
+            f"--no-bump publishes the version already in {project.manifest_name}",
+        )
 
     git = config.active_git
     commands = config.commands
