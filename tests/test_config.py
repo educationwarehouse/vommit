@@ -304,6 +304,42 @@ def test_write_to_pyproject_collapses_disabled_sections(tmp_path):
     assert Config.from_pyproject_path(pyproject).pypi.enabled is False
 
 
+def test_write_to_pyproject_leaves_no_trailing_blank_line(tmp_path):
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text("[project]\nname = 'sandbox'\n\n[tool.vommit]\ngit = false\n")
+
+    Config.from_pyproject_path(pyproject).write_to_pyproject(pyproject)
+    written = pyproject.read_text()
+
+    assert written.endswith("\n")
+    assert not written.endswith("\n\n")
+
+
+def test_write_to_pyproject_is_byte_idempotent(tmp_path):
+    """
+    Writing the same config twice may not touch the file the second time.
+
+    `setup` writes even when it has nothing to configure, so anything the write
+    adds unconditionally shows up as a diff on every run.
+    """
+    pyproject = tmp_path / "pyproject.toml"
+    Config.default().write_to_pyproject(pyproject)
+
+    once = pyproject.read_text()
+    Config.from_pyproject_path(pyproject).write_to_pyproject(pyproject)
+
+    assert pyproject.read_text() == once
+
+
+def test_write_to_pyproject_ends_a_file_without_a_newline(tmp_path):
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text("[project]\nname = 'sandbox'")
+
+    Config.default().write_to_pyproject(pyproject)
+
+    assert pyproject.read_text().endswith("\n")
+
+
 OUT_OF_ORDER = """[tool.hatch.build]
 packages = ["src/vommit"]
 

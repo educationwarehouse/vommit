@@ -556,4 +556,10 @@ class Config(InteractiveConfig, Defaultable):
             _merge_toml_table_in_place(fresh, payload)
             _place_new_toml_block(doc, key_parts, fresh, replaces)
 
-        pyproject_path.write_text(tomlkit.dumps(doc) + "\n")
+        # tomlkit hands back the file's own trailing newline, so adding one
+        # unconditionally grows the file by a blank line on every write, and
+        # `setup` writes even when it has nothing to configure
+        contents = tomlkit.dumps(doc)
+        pyproject_path.write_text(
+            contents if contents.endswith("\n") else contents + "\n"
+        )
