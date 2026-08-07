@@ -2,6 +2,11 @@
 
 <!-- next-version-placeholder -->
 
+## v0.3.0 (2026-08-07)
+
+### Feature
+* **migrate:** use distribution names for metadata version lookups
+
 ## v0.2.2 (2026-08-07)
 
 ### Fix
