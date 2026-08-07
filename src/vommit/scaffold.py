@@ -254,8 +254,8 @@ def initial_commit_message(supplied: str | None) -> str | None:
     The message `init` commits with, or None to make no commit at all.
 
     An absent flag takes the default; an explicitly empty one asks for no
-    commit, which is otherwise unsayable under `--non-interactive` -- there is no
-    prompt there to answer no to.
+    commit, which is otherwise unsayable under `--non-interactive`: there is
+    no prompt there to answer no to.
     """
     if supplied is None:
         return DEFAULT_COMMIT_MESSAGE
@@ -266,8 +266,8 @@ def _settle_license(supplied: str, asker: Asker) -> str:
     """
     The SPDX identifier to record, keeping one we were given but do not offer.
 
-    An identifier outside `CHOICES` cannot be the select's default -- it would
-    open on a choice that is not in the list -- so it is carried by the `other`
+    An identifier outside `CHOICES` cannot be the select's default (it would
+    open on a choice that is not in the list), so it is carried by the `other`
     answer instead, which pre-fills the follow-up with it. That way an asker
     that only ever takes defaults hands back the identifier it was given, rather
     than silently declaring the package under `DEFAULT_LICENSE`.
@@ -305,7 +305,7 @@ def reset_version(root: Path) -> bool:
     `uv init` writes 0.1.0, which claims a release that never happened: the first
     `bump` would then take a `feat` project to 0.2.0 and leave 0.1.0 a version
     nobody can install. From 0.0.0 the first release is the one the commits ask
-    for -- 0.1.0 for a feature, 0.0.1 for a fix.
+    for: 0.1.0 for a feature, 0.0.1 for a fix.
     """
     pyproject = root / PYPROJECT
     document = read_toml(pyproject)
@@ -345,8 +345,8 @@ def wanted_ignores(venv: str | None = None) -> list[str]:
     The ignore entries this project needs, the chosen environment included.
 
     `uv venv` happens to drop a `.gitignore` holding `*` into whatever it
-    creates, so a directory named anything at all is currently invisible to git
-    -- but that is uv's promise, not ours, and a `.gitignore` naming `venv/`
+    creates, so a directory named anything at all is currently invisible to
+    git. But that is uv's promise, not ours, and a `.gitignore` naming `venv/`
     while the project keeps its environment in `env/` is wrong on its face.
     """
     entries = list(REQUIRED_IGNORES)
