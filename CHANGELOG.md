@@ -2,6 +2,11 @@
 
 <!-- next-version-placeholder -->
 
+## v0.3.1 (2026-08-07)
+
+### Fix
+* **config:** preserve stable pyproject trailing newlines
+
 ## v0.3.0 (2026-08-07)
 
 ### Feature

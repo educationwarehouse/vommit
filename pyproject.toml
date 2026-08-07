@@ -1,6 +1,6 @@
 [project]
 name = "vommit"
-version = "0.3.0"
+version = "0.3.1"
 description = "Vommit Oversees Making & Managing Installable Things"
 readme = "README.md"
 authors = [
