@@ -3,7 +3,7 @@ import dataclasses as dc
 import difflib
 import re
 import typing as t
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
 import tomlkit
 
@@ -83,6 +83,19 @@ PSR_DISTRIBUTION = "python-semantic-release"
 
 METADATA_IMPORT = "from importlib.metadata import version"
 
+
+def version_lookup(distribution: str | None) -> str:
+    """
+    What `version()` is called with in a rewritten file.
+
+    The distribution name written out, not `__package__`, which is whatever
+    the importer called the module (`src.endow` from a bare checkout, None
+    for a top-level module) and fails the lookup at import time. Falls back
+    to `__package__` when the project declares no name.
+    """
+    return f'"{distribution}"' if distribution else "__package__"
+
+
 Backend = t.Literal["hatchling", "setuptools", "uv_build"]
 
 BUILD_BACKENDS: dict[str, Backend] = {
@@ -94,7 +107,7 @@ BUILD_BACKENDS: dict[str, Backend] = {
 
 # Where each backend declares the dynamic version it reads. uv_build is absent
 # on purpose: it has never supported dynamic versions, which is why v7 sat
-# badly with it -- and why it is the shape the other two get transformed into.
+# badly with it, and why it is the shape the other two get transformed into.
 HOOK_KEYS: dict[str, str] = {
     "hatchling": "tool.hatch.version",
     "setuptools": "tool.setuptools.dynamic.version",
@@ -214,6 +227,17 @@ class VersionFile:
             flags=re.MULTILINE,
         )
 
+    @property
+    def package_pattern(self) -> re.Pattern[str]:
+        """
+        The assignment an earlier vommit wrote: a lookup keyed on `__package__`.
+        """
+        return re.compile(
+            rf"^(?P<prefix>[ \t]*{re.escape(self.variable)}[ \t]*[:=][ \t]*)"
+            rf"version\([ \t]*__package__[ \t]*\)",
+            flags=re.MULTILINE,
+        )
+
     def read(self, root: Path) -> str | None:
         """
         The version currently written in this file, if it is there to be read.
@@ -223,6 +247,15 @@ class VersionFile:
             return None
         match = self.pattern.search(target.read_text())
         return match.group("version") if match else None
+
+    def reads_package_metadata(self, root: Path) -> bool:
+        """
+        Whether this file looks its version up by `__package__`.
+        """
+        target = root / self.path
+        if not target.exists():
+            return False
+        return self.package_pattern.search(target.read_text()) is not None
 
 
 #: Filenames a project keeps its version literal in, most conventional first.
@@ -242,14 +275,16 @@ def discover_version_files(
     root: Path, pyproject: Path | None = None
 ) -> list[VersionFile]:
     """
-    Source files holding a hard-coded version literal.
+    Source files whose version is stored in a shape vommit can improve on.
 
     `migrate` is told these by `version_variable`; `setup` has no such config to
-    read, so it looks where the convention puts them. A file already reading its
-    version from the installed metadata has no literal to match and so is never
-    a candidate -- which is precisely the state this exists to reach.
+    read, so it looks where the convention puts them. Two shapes qualify: a
+    hard-coded literal, and the `version(__package__)` an earlier vommit wrote
+    (see `version_lookup`). A file already naming its distribution matches
+    neither and is never a candidate.
     """
     pyproject = pyproject or root / "pyproject.toml"
+    distribution = project_name(pyproject)
     found: list[VersionFile] = []
 
     for directory in _package_dirs(root, pyproject):
@@ -258,15 +293,39 @@ def discover_version_files(
             if not path.is_file():
                 continue
             relative = path.relative_to(root).as_posix()
-            for variable in VERSION_VARIABLES:
-                candidate = VersionFile(path=relative, variable=variable)
-                if parse_version(candidate.read(root)):
-                    # one entry per file: the first variable holding a version
-                    # is the one being maintained
-                    found.append(candidate)
-                    break
+            if candidate := _version_file_at(root, relative, distribution):
+                found.append(candidate)
 
     return found
+
+
+def _version_file_at(
+    root: Path,
+    relative: str,
+    distribution: str | None,
+) -> VersionFile | None:
+    """
+    The one entry a file earns, literal first.
+
+    One entry per file: the first variable holding a version is the one being
+    maintained. A literal outranks a `__package__` lookup in the same file:
+    it is the copy that goes stale. Without a distribution name there is
+    nothing to rewrite `__package__` into, so that shape is left alone.
+    """
+    for variable in VERSION_VARIABLES:
+        candidate = VersionFile(path=relative, variable=variable)
+        if parse_version(candidate.read(root)):
+            return candidate
+
+    if not distribution:
+        return None
+
+    for variable in VERSION_VARIABLES:
+        candidate = VersionFile(path=relative, variable=variable)
+        if candidate.reads_package_metadata(root):
+            return candidate
+
+    return None
 
 
 def _package_dirs(root: Path, pyproject: Path) -> list[Path]:
@@ -313,8 +372,8 @@ class VersionTransform:
     The `[project]` edits that give vommit a version it can bump.
 
     Two shapes reach this: a dynamic version to undo (`backend` and `hook_key`
-    set), and a `[project]` that never declared a version at all -- legal under
-    v7, which kept it in the source file, and unbuildable without one now.
+    set), and a `[project]` that never declared a version at all (legal under
+    v7, which kept it in the source file, and unbuildable without one now).
     """
 
     version: str
@@ -349,6 +408,7 @@ class VersionPlan:
     transform: VersionTransform | None = None
     rewrites: tuple[VersionFile, ...] = ()
     warnings: tuple[Note, ...] = ()
+    distribution: str | None = None
 
     @property
     def empty(self) -> bool:
@@ -357,9 +417,10 @@ class VersionPlan:
     @property
     def steps(self) -> list[str]:
         steps = list(self.transform.steps) if self.transform else []
+        lookup = version_lookup(self.distribution)
         steps += [
             f"rewrite {version_file.path} to "
-            f"`{version_file.variable} = version(__package__)`"
+            f"`{version_file.variable} = version({lookup})`"
             for version_file in self.rewrites
         ]
         return steps
@@ -629,8 +690,8 @@ def _translate_commit_author(work: _Translation) -> None:
 
     v7 fell back to `semantic-release <semantic-release>` in code rather than in
     `defaults.cfg`, so it is absent from `PSR_DEFAULTS` on purpose: nobody chose
-    that identity, and vommit's own default -- the identity of whoever releases
-    -- is the one a project would have picked if v7 had asked.
+    that identity, and vommit's own default (the identity of whoever releases)
+    is the one a project would have picked if v7 had asked.
     """
     if not work.is_explicit("commit_author"):
         return
@@ -646,7 +707,7 @@ def _translate_branch(work: _Translation) -> None:
 
     Every other default describes what the project was released under, so
     reproducing it keeps behaviour. `branch = master` describes what v7 guessed
-    when nobody said otherwise -- and on a repo that renamed its default branch
+    when nobody said otherwise, and on a repo that renamed its default branch
     it is simply wrong, pinning a branch that does not exist and failing the
     first bump against `on_wrong_branch = error`. A branch the project wrote
     down is a decision and gets pinned; an unwritten one is left to vommit's
@@ -860,7 +921,7 @@ def _collect_unsupported(work: _Translation) -> None:
     Everything the project wrote down that translation never looked at.
 
     v7 ignored unknown keys without a word, so real configs carry typos that
-    never did anything -- hence the did-you-mean rather than a bare "unknown".
+    never did anything, hence the did-you-mean rather than a bare "unknown".
     """
     for key in sorted(work.raw.explicit - HANDLED_KEYS):
         if reason := UNSUPPORTED_KEYS.get(key):
@@ -884,7 +945,7 @@ def plan_static_version(
     """
     The `[project]` edits that make a dynamic-version project bumpable, if any.
 
-    `uv version` -- which every bump goes through -- refuses a project that
+    `uv version`, which every bump goes through, refuses a project that
     declares `dynamic = ["version"]`, whatever the backend. v7 projects are
     usually shaped that way: `version_variable` exists precisely because the
     backend reads the version out of a source file instead of `[project]`.
@@ -943,7 +1004,7 @@ def plan_version_migration(
 
     Refuses the one combination that destroys information: rewriting the source
     literal away when `[project]` cannot hold the version it replaced. That is
-    not a hypothetical -- a v7 project with no `[project].version` and no
+    not a hypothetical: a v7 project with no `[project].version` and no
     `dynamic` keeps its only version in the file about to be rewritten.
     """
     rewrites = tuple(version_files)
@@ -957,69 +1018,46 @@ def plan_version_migration(
             f"then migrate."
         )
 
+    distribution = project_name(pyproject)
     return VersionPlan(
         transform=transform,
         rewrites=rewrites,
-        warnings=tuple(_rewrite_warnings(rewrites, project_name(pyproject))),
+        distribution=distribution,
+        warnings=tuple(_package_lookup_notes(pyproject.parent, rewrites, distribution)),
     )
+
+
+def _package_lookup_notes(
+    root: Path,
+    version_files: t.Iterable[VersionFile],
+    distribution: str | None,
+) -> list[Note]:
+    """
+    Why a file that already reads its metadata is still worth rewriting.
+    `importlib.metadata.version` looks up a *distribution*; `__package__` holds
+    whatever the importer called the module. They agree only by coincidence of
+    layout, and where they do not the file raises `PackageNotFoundError` on
+    import, long after anyone looked at it.
+    """
+    if not distribution:
+        return []
+
+    return [
+        Note(
+            version_file.path,
+            f"`version(__package__)` resolves to whatever the importer calls "
+            f"this module, and raises PackageNotFoundError under a `src.`-"
+            f"prefixed import or a package renamed away from its distribution; "
+            f'`version("{distribution}")` always resolves',
+        )
+        for version_file in version_files
+        if version_file.reads_package_metadata(root)
+    ]
 
 
 def _has_static_version(pyproject: Path) -> bool:
     project = read_toml(pyproject).get("project")
     return isinstance(project, dict) and "version" in project
-
-
-def _rewrite_warnings(
-    version_files: t.Iterable[VersionFile],
-    distribution: str | None,
-) -> list[Note]:
-    """
-    Where `version(__package__)` will not resolve to the distribution.
-
-    `importlib.metadata.version` looks up a *distribution*, while `__package__`
-    names the *import* package. They usually normalise to the same string,
-    which is why the idiom works at all -- but when they do not, the rewritten
-    file raises `PackageNotFoundError` on import, long after this ran.
-    """
-    if not distribution:
-        return []
-
-    notes: list[Note] = []
-    wanted = normalise_name(distribution)
-    for version_file in version_files:
-        package = _import_package(version_file)
-        literal = f'{version_file.variable} = version("{distribution}")'
-        if package is None:
-            notes.append(
-                Note(
-                    version_file.path,
-                    f"a top-level module has no `__package__` to look up; "
-                    f"write `{literal}` instead",
-                )
-            )
-        elif normalise_name(package) != wanted:
-            notes.append(
-                Note(
-                    version_file.path,
-                    f"`version(__package__)` looks up {package!r}, but the "
-                    f"distribution is {distribution!r}; write `{literal}` "
-                    f"instead if the import fails",
-                )
-            )
-    return notes
-
-
-def _import_package(version_file: VersionFile) -> str | None:
-    """
-    What `__package__` holds inside this file, or None for a top-level module.
-
-    A `src` directory is a layout convention rather than a package, so it never
-    counts towards the dotted name -- a project that really ships a package
-    called `src` gets one spurious warning.
-    """
-    parts = PurePosixPath(version_file.path).parts[:-1]
-    package = [part for part in parts if part not in {".", "src"}]
-    return ".".join(package) or None
 
 
 def _detect_backend(document: t.Any) -> str:
@@ -1094,12 +1132,15 @@ def apply_static_version(pyproject: Path, transform: VersionTransform) -> None:
 def rewrite_version_files(
     version_files: t.Iterable[VersionFile],
     root: Path,
+    distribution: str | None = None,
 ) -> RewriteResult:
     """
     Point the files v7 rewrote at the installed metadata instead.
 
-    `__version__ = "1.2.3"` becomes `__version__ = version(__package__)`, so the
+    `__version__ = "1.2.3"` becomes `__version__ = version("endow")`, so the
     literal stops being a second source of truth that nothing updates any more.
+    See `version_lookup` for why the distribution is named rather than derived
+    from `__package__`.
     """
     changed: list[Path] = []
     skipped: list[Note] = []
@@ -1116,10 +1157,17 @@ def rewrite_version_files(
             continue
 
         original = target.read_text()
-        rewritten = _rewrite_assignment(original, version_file)
+        rewritten = _rewrite_assignment(original, version_file, distribution)
         if rewritten is None:
             skipped.append(
                 Note(version_file.path, f"no {version_file.variable} assignment found")
+            )
+            continue
+        if rewritten == original:
+            # a `__package__` lookup with no distribution name to put in its
+            # place: writing the file back unchanged would report work it did not do
+            skipped.append(
+                Note(version_file.path, "already reads the installed metadata")
             )
             continue
 
@@ -1129,11 +1177,20 @@ def rewrite_version_files(
     return RewriteResult(changed=changed, skipped=skipped)
 
 
-def _rewrite_assignment(content: str, version_file: VersionFile) -> str | None:
+def _rewrite_assignment(
+    content: str,
+    version_file: VersionFile,
+    distribution: str | None = None,
+) -> str | None:
     """
-    None when the file holds no assignment v7 would have recognised.
+    None when the file holds neither shape `discover_version_files` recognises.
+
+    The literal is tried first, for the same reason discovery ranks it first:
+    it is the copy that goes stale.
     """
-    match = version_file.pattern.search(content)
+    match = version_file.pattern.search(content) or version_file.package_pattern.search(
+        content
+    )
     if not match:
         return None
 
@@ -1142,7 +1199,8 @@ def _rewrite_assignment(content: str, version_file: VersionFile) -> str | None:
     # directly above the assignment rather than at the top of the file: legal
     # wherever the assignment is, and it never has to reason about a docstring.
     header = "" if METADATA_IMPORT in content else f"{indent}{METADATA_IMPORT}\n\n"
-    replacement = f"{header}{indent}{version_file.variable} = version(__package__)"
+    lookup = version_lookup(distribution)
+    replacement = f"{header}{indent}{version_file.variable} = version({lookup})"
     return content[: match.start()] + replacement + content[match.end() :]
 
 

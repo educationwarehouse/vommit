@@ -531,8 +531,8 @@ class Config(InteractiveConfig, Defaultable):
         """
         Write the config, merging into an existing table or adding a new one.
 
-        `replaces` names a key the new table should stand in for -- the config it
-        supersedes -- so a migration lands where the old one was instead of at
+        `replaces` names a key the new table should stand in for (the config it
+        supersedes), so a migration lands where the old one was instead of at
         the end of the file. Ignored once `toml_key` is already there: a table
         the project has been editing is not worth moving.
         """

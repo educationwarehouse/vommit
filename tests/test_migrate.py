@@ -547,6 +547,80 @@ def test_version_file_parse():
     assert VersionFile.parse(":V") is None
 
 
+@pytest.mark.parametrize(
+    "body",
+    [
+        "__version__ = version(__package__)\n",
+        "__version__=version(__package__)\n",
+        "__version__ = version( __package__ )\n",
+        "class Meta:\n    __version__ = version(__package__)\n",
+        '"""Docstring first."""\n\n__version__ = version(__package__)\n',
+    ],
+)
+def test_reads_package_metadata_accepts_the_shapes_a_rewrite_produces(tmp_path, body):
+    (tmp_path / "mod.py").write_text(f"{METADATA_IMPORT}\n\n{body}")
+
+    assert VersionFile("mod.py", "__version__").reads_package_metadata(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        '__version__ = version("mypkg")\n',
+        "__version__ = version(__name__)\n",
+        '__version__ = "1.2.3"\n',
+        "VERSION = version(__package__)\n",
+        "# __version__ = version(__package__)\n",
+    ],
+)
+def test_reads_package_metadata_rejects_everything_else(tmp_path, body):
+    (tmp_path / "mod.py").write_text(f"{METADATA_IMPORT}\n\n{body}")
+
+    assert not VersionFile("mod.py", "__version__").reads_package_metadata(tmp_path)
+
+
+def test_neither_pattern_sees_an_annotated_assignment(tmp_path):
+    """
+    `[:=]` is one character, so `__version__: str = ...` is outside both shapes.
+
+    Inherited from v7's own regex, which `pattern` deliberately mirrors, and
+    vommit writes no annotation of its own, so there is nothing here to widen
+    for: a project that annotates keeps whichever shape it already had.
+    """
+    version_file = VersionFile("mod.py", "__version__")
+
+    (tmp_path / "mod.py").write_text('__version__: str = "1.2.3"\n')
+    assert version_file.read(tmp_path) is None
+
+    (tmp_path / "mod.py").write_text(
+        f"{METADATA_IMPORT}\n\n__version__: str = version(__package__)\n"
+    )
+    assert not version_file.reads_package_metadata(tmp_path)
+
+
+def test_reads_package_metadata_on_a_file_that_is_not_there(tmp_path):
+    """
+    v7's `version_variable` can name a file nobody kept, and the plan asks every
+    entry about its shape before anything checks whether it exists.
+    """
+    assert not VersionFile("gone.py", "__version__").reads_package_metadata(tmp_path)
+
+
+def test_a_missing_file_earns_no_explanation(tmp_path):
+    """
+    The reachable route to that guard: `rewrite_version_files` reports the
+    missing file, so the plan must get there without raising first.
+    """
+    write(tmp_path, "[project]\nname = 'sample'\nversion = '1.0.0'\n")
+
+    plan = plan_version_migration(
+        tmp_path / "pyproject.toml", [VersionFile("gone.py", "__version__")]
+    )
+
+    assert plan.warnings == ()
+    assert plan.rewrites == (VersionFile("gone.py", "__version__"),)
+
+
 def test_report_helpers():
     clean = MigrationReport(mapped=[Note("branch", "git.branch = 'main'")])
     assert clean.clean
@@ -589,7 +663,10 @@ def test_a_static_project_needs_no_transform(tmp_path):
 def test_a_project_that_already_has_a_static_version_is_left_alone(tmp_path):
     body = "[project]\nname = 'x'\nversion = '1.0.0'\n"
     assert plan_static_version(write(tmp_path, body), []) is None
-    assert plan_static_version(write(tmp_path, f"{body}dynamic = ['readme']\n"), []) is None
+    assert (
+        plan_static_version(write(tmp_path, f"{body}dynamic = ['readme']\n"), [])
+        is None
+    )
 
 
 def test_a_project_without_pep_621_metadata_needs_no_transform(tmp_path):
@@ -600,7 +677,7 @@ def test_a_project_without_pep_621_metadata_needs_no_transform(tmp_path):
 def test_a_project_with_no_version_at_all_gets_one_frozen_in(tmp_path):
     """
     v7 predates PEP 621 and let the version live only in the source file. That
-    file is about to be rewritten, so the literal has to land in [project] --
+    file is about to be rewritten, so the literal has to land in [project],
     the case that used to slip through and leave the project versionless.
     """
     pyproject = write(tmp_path, "[project]\nname = 'x'\n")
@@ -878,7 +955,7 @@ def test_applying_the_transform_refuses_a_missing_project_table(tmp_path, conten
 def test_rewriting_a_version_file(tmp_path):
     endow(tmp_path)
 
-    result = rewrite_version_files([ENDOW_VERSION_FILE], tmp_path)
+    result = rewrite_version_files([ENDOW_VERSION_FILE], tmp_path, "endow")
 
     assert result.changed == [tmp_path / ENDOW_VERSION_FILE.path]
     assert result.skipped == []
@@ -887,7 +964,7 @@ def test_rewriting_a_version_file(tmp_path):
         "\n"
         f"{METADATA_IMPORT}\n"
         "\n"
-        "__version__ = version(__package__)\n"
+        '__version__ = version("endow")\n'
     )
 
 
@@ -904,11 +981,11 @@ def test_the_import_is_not_added_twice(tmp_path):
         f"{METADATA_IMPORT}\n\n__version__ = '0.1.1'\n"
     )
 
-    rewrite_version_files([ENDOW_VERSION_FILE], tmp_path)
+    rewrite_version_files([ENDOW_VERSION_FILE], tmp_path, "endow")
     content = (tmp_path / ENDOW_VERSION_FILE.path).read_text()
 
     assert content.count(METADATA_IMPORT) == 1
-    assert "__version__ = version(__package__)" in content
+    assert '__version__ = version("endow")' in content
 
 
 def test_rewriting_keeps_the_indentation(tmp_path):
@@ -952,7 +1029,7 @@ def test_the_plan_pairs_the_freeze_with_the_rewrites(tmp_path):
         'set [project].version = "0.1.1" (read from src/endow/__about__.py)',
         'remove "version" from [project].dynamic',
         "remove [tool.hatch.version]",
-        "rewrite src/endow/__about__.py to `__version__ = version(__package__)`",
+        'rewrite src/endow/__about__.py to `__version__ = version("endow")`',
     ]
     assert "dynamic version" in plan.question
 
@@ -994,67 +1071,19 @@ def test_a_rewrite_that_would_erase_the_only_version_is_refused(tmp_path):
         )
 
 
-def test_a_mismatched_distribution_name_is_warned_about(tmp_path):
-    write(tmp_path, "[project]\nname = 'my-lib'\nversion = '1.0.0'\n")
-
-    plan = plan_version_migration(
-        tmp_path / "pyproject.toml", [VersionFile("src/barfoo/__init__.py", "__ver__")]
-    )
-
-    detail = notes(list(plan.warnings))["src/barfoo/__init__.py"]
-    assert "'barfoo'" in detail
-    assert "'my-lib'" in detail
-    assert '__ver__ = version("my-lib")' in detail
-
-
-def test_a_top_level_module_has_no_package_to_look_up(tmp_path):
-    write(tmp_path, "[project]\nname = 'sample'\nversion = '1.0.0'\n")
-
-    plan = plan_version_migration(
-        tmp_path / "pyproject.toml", [VersionFile("sample.py", "__version__")]
-    )
-
-    detail = notes(list(plan.warnings))["sample.py"]
-    assert "no `__package__`" in detail
-    assert '__version__ = version("sample")' in detail
-
-
-@pytest.mark.parametrize(
-    "path",
-    ["src/my_lib/__init__.py", "my-lib/__init__.py", "./src/my.lib/_version.py"],
-)
-def test_names_that_normalise_to_the_distribution_stay_quiet(tmp_path, path):
-    write(tmp_path, "[project]\nname = 'my-lib'\nversion = '1.0.0'\n")
-
-    plan = plan_version_migration(
-        tmp_path / "pyproject.toml", [VersionFile(path, "__version__")]
-    )
-
-    assert plan.warnings == ()
-
-
-def test_a_nested_package_cannot_be_looked_up_either(tmp_path):
-    write(tmp_path, "[project]\nname = 'pkg'\nversion = '1.0.0'\n")
-
-    plan = plan_version_migration(
-        tmp_path / "pyproject.toml", [VersionFile("src/pkg/sub/_v.py", "__version__")]
-    )
-
-    assert "'pkg.sub'" in notes(list(plan.warnings))["src/pkg/sub/_v.py"]
-
-
 def test_a_project_without_a_name_cannot_be_checked(tmp_path):
     assert project_name(tmp_path / "pyproject.toml") is None
     assert project_name(write(tmp_path, "[tool.other]\nkey = 1\n")) is None
     assert project_name(write(tmp_path, "[project]\nversion = '1.0.0'\n")) is None
     assert project_name(write(tmp_path, "[project]\nname = 'x'\n")) == "x"
 
-    # no name to compare against, so no warning to make
+    # no name to write down, so the rewrite falls back to `__package__`
     write(tmp_path, "[project]\nversion = '1.0.0'\n")
     plan = plan_version_migration(
         tmp_path / "pyproject.toml", [VersionFile("whatever.py", "__version__")]
     )
-    assert plan.warnings == ()
+    assert plan.distribution is None
+    assert plan.steps[-1].endswith("`__version__ = version(__package__)`")
 
 
 @pytest.mark.parametrize("policy", ["warn", "error", "skip"])
@@ -1111,7 +1140,9 @@ def test_an_unset_commit_author_leaves_the_releaser_as_the_author(tmp_path, body
 
 
 def test_commit_author_is_no_longer_reported_as_unsupported(tmp_path):
-    report = translate(psr(tmp_path, "commit_author = 'Bot <bot@example.com>'\n")).report
+    report = translate(
+        psr(tmp_path, "commit_author = 'Bot <bot@example.com>'\n")
+    ).report
 
     assert "commit_author" not in notes(report.unsupported)
     assert "commit_author" not in notes(report.lossy)
@@ -1340,12 +1371,104 @@ def test_discover_version_files_accepts_an_uppercase_variable(tmp_path):
     ]
 
 
-def test_discover_version_files_ignores_a_file_reading_the_metadata(tmp_path):
+def test_discover_version_files_ignores_a_file_naming_its_distribution(tmp_path):
     """
     The state this whole offer exists to reach must not look like work to do.
     """
     package(tmp_path)
     (tmp_path / "src/mypkg/__about__.py").write_text(
+        'from importlib.metadata import version\n\n__version__ = version("mypkg")\n'
+    )
+
+    assert discover_version_files(tmp_path) == []
+
+
+def test_discover_version_files_finds_a_package_lookup(tmp_path):
+    """
+    An earlier vommit wrote this shape; it is worth upgrading, not leaving.
+    """
+    package(tmp_path)
+    (tmp_path / "src/mypkg/__about__.py").write_text(
+        "from importlib.metadata import version\n\n__version__ = version(__package__)\n"
+    )
+
+    assert discover_version_files(tmp_path) == [
+        VersionFile(path="src/mypkg/__about__.py", variable="__version__")
+    ]
+
+
+def test_a_literal_outranks_a_package_lookup_in_the_same_file(tmp_path):
+    package(tmp_path)
+    (tmp_path / "src/mypkg/__about__.py").write_text(
+        "from importlib.metadata import version\n\n"
+        "__version__ = version(__package__)\n"
+        'VERSION = "1.2.3"\n'
+    )
+
+    assert discover_version_files(tmp_path) == [
+        VersionFile(path="src/mypkg/__about__.py", variable="VERSION")
+    ]
+
+
+def test_upgrading_a_package_lookup_end_to_end(tmp_path):
+    directory = package(tmp_path)
+    about = directory / "__about__.py"
+    about.write_text(f"{METADATA_IMPORT}\n\n__version__ = version(__package__)\n")
+
+    plan = plan_version_migration(
+        tmp_path / "pyproject.toml", discover_version_files(tmp_path)
+    )
+
+    assert plan.transform is None
+    assert plan.steps == [
+        'rewrite src/mypkg/__about__.py to `__version__ = version("mypkg")`'
+    ]
+
+    detail = notes(list(plan.warnings))["src/mypkg/__about__.py"]
+    assert "PackageNotFoundError" in detail
+    assert "`src.`" in detail
+    assert '`version("mypkg")`' in detail
+
+    rewrite_version_files(plan.rewrites, tmp_path, plan.distribution)
+
+    assert about.read_text() == (
+        f'{METADATA_IMPORT}\n\n__version__ = version("mypkg")\n'
+    )
+
+
+def test_rewriting_a_literal_needs_no_explanation(tmp_path):
+    """
+    A stale literal speaks for itself; only the shape that looks fine needs one.
+    """
+    plan = plan_version_migration(endow(tmp_path), [ENDOW_VERSION_FILE])
+
+    assert plan.warnings == ()
+
+
+def test_a_package_lookup_with_no_distribution_is_left_alone(tmp_path):
+    endow(tmp_path)
+    target = tmp_path / ENDOW_VERSION_FILE.path
+    content = f"{METADATA_IMPORT}\n\n__version__ = version(__package__)\n"
+    target.write_text(content)
+
+    result = rewrite_version_files([ENDOW_VERSION_FILE], tmp_path)
+
+    assert result.changed == []
+    assert notes(result.skipped) == {
+        ENDOW_VERSION_FILE.path: "already reads the installed metadata"
+    }
+    assert target.read_text() == content
+
+
+def test_a_package_lookup_needs_a_distribution_to_name(tmp_path):
+    """
+    Nothing to rewrite `__package__` into, so there is no offer to make.
+    """
+    write(tmp_path, '[project]\nversion = "1.2.3"\n')
+    directory = tmp_path / "src" / "mypkg"
+    directory.mkdir(parents=True)
+    (directory / "__init__.py").write_text("")
+    (directory / "__about__.py").write_text(
         "from importlib.metadata import version\n\n__version__ = version(__package__)\n"
     )
 

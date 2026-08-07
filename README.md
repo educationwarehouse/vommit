@@ -291,8 +291,15 @@ are changed to read installed metadata:
 ```python
 from importlib.metadata import version
 
-__version__ = version(__package__)
+__version__ = version("your-distribution-name")
 ```
+
+The distribution name is written out rather than derived from `__package__`,
+which is whatever the importer called the module (`src.your_package` for a
+test importing straight from a checkout) and fails the lookup at import time.
+
+An earlier vommit wrote `version(__package__)`, so `setup` offers to upgrade
+that shape too; a file already naming its distribution is never offered.
 
 `[tool.vommit]` is written into the place `[tool.semantic_release]` held, so the
 file keeps its shape; without a v7 table to stand in for, a new `[tool.vommit]`

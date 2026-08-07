@@ -70,7 +70,7 @@ class GitRepo:
         The checked-out branch, also before the first commit.
 
         Falls back to `rev-parse`, which answers 'HEAD' on the detached checkout
-        that CI hands us -- the one state a symbolic ref cannot describe.
+        that CI hands us, the one state a symbolic ref cannot describe.
         """
         if branch := self._symbolic_branch():
             return branch

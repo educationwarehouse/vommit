@@ -2,9 +2,9 @@
 Whether the configured build command will actually build this project.
 
 A release runs `clean` and `build` *after* the bump, so a build that cannot
-work is found out once the version has been written, the changelog rewritten and
-the commit tagged -- recoverable with `vommit bump --undo`, but only after the
-fact. These checks run at `setup` instead, where the answer costs nothing.
+work is found out once the version has been written, the changelog rewritten
+and the commit tagged. That is recoverable with `vommit bump --undo`, but only
+after the fact. These checks run at `setup` instead, where the answer costs nothing.
 
 They warn rather than refuse. The build command is a shell string and the ways
 to make one work are open-ended; the only thing worth saying with confidence is
@@ -58,8 +58,8 @@ def _uv_build_warnings(root: Path, pyproject: Path, document: t.Any) -> list[str
     The one uv_build misconfiguration that is certain: no module where it looks.
 
     uv_build derives the module path from the distribution name, so renaming
-    `[project].name` without renaming the directory -- or keeping a flat layout,
-    or a single-file module -- breaks the build with nothing else changing.
+    `[project].name` without renaming the directory (or keeping a flat layout,
+    or a single-file module) breaks the build with nothing else changing.
     """
     settings = _table(document, "tool", "uv", "build-backend")
 

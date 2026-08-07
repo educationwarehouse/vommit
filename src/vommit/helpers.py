@@ -1,4 +1,5 @@
 import typing as t
+import warnings
 from importlib.metadata import version
 from pathlib import Path
 
@@ -22,13 +23,20 @@ def throw(error: Exception) -> t.Never:
     raise error
 
 
+DEPRECATED_CANONICAL_VERSION = (
+    "canonical_version() is deprecated: it derives a distribution name from an "
+    "import name, and the two only agree by accident: `src.my_lib` never "
+    "reduces to the distribution `my-lib`, so the lookup raises "
+    "PackageNotFoundError at import time. Name the distribution instead: "
+    '`__version__ = version("my-lib")`. `vommit setup` rewrites the file for you.'
+)
+
+
 def canonical_version(package_name: str):
     """
-    Determines the canonical version of a package.
-
-    This function extracts the last segment of a package name if it includes dots,
-    otherwise it uses the full package name. It then retrieves the corresponding
-    version of the package.
+    Deprecated: the version of a package, by the last segment of its import
+    name. Superseded by naming the distribution outright. See
+    `DEPRECATED_CANONICAL_VERSION`.
 
     Args:
         package_name (str): The name of the package. Can be a fully qualified
@@ -36,10 +44,8 @@ def canonical_version(package_name: str):
 
     Returns:
         str: The version of the specified package.
-
-    Example:
-        __version__ = vommit.canonical_version(__package__)
     """
+    warnings.warn(DEPRECATED_CANONICAL_VERSION, DeprecationWarning, stacklevel=2)
 
     # e.g. src.vommit -> vommit
     package = package_name.split(".")[-1] if "." in package_name else package_name

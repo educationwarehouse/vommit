@@ -261,7 +261,7 @@ def test_a_malformed_commit_author_stops_before_the_version_changes(sandbox):
 def test_a_commit_free_bump_ignores_the_commit_author(sandbox):
     """
     `commit_format = ""` stages without committing, so there is no commit for an
-    author to land on and no reason to refuse one that will never be used --
+    author to land on and no reason to refuse one that will never be used,
     left over from before committing was switched off, say.
     """
     sandbox.set_config("tool.vommit.git", commit_format="", commit_author="Bogus")

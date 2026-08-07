@@ -258,9 +258,9 @@ def test_plan_request_keeps_a_license_it_does_not_offer():
 
 def test_plan_request_carries_an_unoffered_license_through_other():
     """
-    It cannot be the select's default -- that would open on a choice absent from
-    the list -- so it rides on `other` and pre-fills the follow-up, which is also
-    how a person gets to see and change it.
+    It cannot be the select's default (that would open on a choice absent from
+    the list), so it rides on `other` and pre-fills the follow-up, which is
+    also how a person gets to see and change it.
     """
     asker = ScriptedAsker()
     plan_request(ScaffoldRequest(project_name="mypkg", license_id="EUPL-1.2"), asker)

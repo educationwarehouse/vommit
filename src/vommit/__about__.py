@@ -1,5 +1,3 @@
-from .helpers import canonical_version
+from importlib.metadata import version
 
-assert __package__, "unknown package?"
-
-__version__ = canonical_version(__package__)
+__version__ = version("vommit")

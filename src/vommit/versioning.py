@@ -96,8 +96,8 @@ def to_cargo_version(version: str) -> str:
     Only the shapes vommit itself produces convert: a release, optionally with
     an alpha/beta/rc prerelease. Post, dev, epoch and local segments have no
     SemVer spelling that maturin would read back as the same version, and a
-    `--version` flag can ask for any of them, so they are refused here -- before
-    anything is written -- rather than silently published under another number.
+    `--version` flag can ask for any of them, so they are refused here (before
+    anything is written) rather than silently published under another number.
     """
     parsed = parse_version(version)
     if parsed is None:
@@ -166,9 +166,9 @@ def plan_bump(
     `--bump minor` yields 1.2.0, skipping the 1.1.0 the rc series was built for.
 
     So when the current version is a prerelease we work out the release it was
-    heading for -- `baseline` (the last released version) bumped by `level`,
-    never lower than what the prerelease itself already claims -- and either
-    promote that series or, if a bigger change has landed since, replace it.
+    heading for: `baseline` (the last released version) bumped by `level`,
+    never lower than what the prerelease itself already claims. That series is
+    then either promoted or, if a bigger change has landed since, replaced.
     """
     token_args = [] if prerelease_token is None else ["--bump", prerelease_token]
     parsed = parse_version(current)
@@ -191,8 +191,8 @@ class VersionSource:
     apply.
 
     Previewing first is what lets the whole release be validated before that
-    file is touched. Which file it is varies -- `pyproject.toml` for a Python
-    package, `Cargo.toml` for one whose wheel is built from a crate -- but the
+    file is touched. Which file it is varies (`pyproject.toml` for a Python
+    package, `Cargo.toml` for one whose wheel is built from a crate), but the
     arithmetic never does: every subclass hands the same `uv version` arguments
     to uv and writes back whatever uv makes of them, so two projects bumped by
     the same commits land on the same version.
@@ -338,7 +338,7 @@ class CargoProject(VersionSource):
 
     maturin builds the wheel from the crate and takes its version from there, so
     `pyproject.toml` says `dynamic = ["version"]` and has nothing for
-    `uv version` to bump -- uv refuses the project outright. The arithmetic is
+    `uv version` to bump; uv refuses the project outright. The arithmetic is
     still uv's: it runs against a throwaway manifest holding nothing but the
     current version, and the answer is written back as SemVer.
     """
@@ -409,7 +409,7 @@ class CargoProject(VersionSource):
         """
         Carry the new version into `Cargo.lock`, the way `uv version` relocks.
 
-        `--workspace` keeps this to what the manifest already pins -- a bump
+        `--workspace` keeps this to what the manifest already pins: a bump
         moves no dependency versions. Online, because a dependency pinned to a
         git checkout cannot resolve offline.
         """
@@ -438,8 +438,8 @@ def version_source(runner: Runner, root: Path) -> VersionSource:
 
     `Cargo.toml` wins only for the one shape that leaves uv nothing to work
     with: a maturin build whose `pyproject.toml` declares the version dynamic.
-    Anything else -- including a Python package that merely happens to vendor a
-    crate -- keeps `[project].version`, because that is still what gets built.
+    Anything else, including a Python package that merely happens to vendor a
+    crate, keeps `[project].version`, because that is still what gets built.
     """
     pyproject = root / PYPROJECT
     cargo = CargoProject(
