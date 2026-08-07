@@ -30,7 +30,7 @@ from .config import CommandConfig, Config, GitConfig
 from .errors import VommitError
 from .git import GitRepo
 from .shell import CommandResult, Runner, shell
-from .versioning import UvProject
+from .versioning import VersionSource, version_source
 
 PYPROJECT = "pyproject.toml"
 
@@ -151,7 +151,7 @@ def run_release(
     itself was declined.
     """
     repo = GitRepo(runner=runner, root=root)
-    project = UvProject(runner=runner, root=root)
+    project = version_source(runner, root)
 
     git = config.active_git
     commands = config.commands
@@ -304,11 +304,11 @@ def _stale_tag(repo: GitRepo, git: GitConfig, version: str) -> "StaleTag | None"
     )
 
 
-def _current_version(project: UvProject) -> str:
+def _current_version(project: VersionSource) -> str:
     version = project.current_version()
     if not version:
         raise VommitError(
-            f"No version found in {PYPROJECT}; there is nothing to release."
+            f"No version found in {project.manifest_name}; there is nothing to release."
         )
     return version
 

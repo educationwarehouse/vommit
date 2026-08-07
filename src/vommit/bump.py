@@ -10,7 +10,7 @@ from .errors import VommitError
 from .git import GitRepo, resolve_author
 from .helpers import relative_path
 from .shell import Runner
-from .versioning import UvProject, is_prerelease, plan_bump
+from .versioning import is_prerelease, plan_bump, version_source
 
 Notify = t.Callable[[str], None]
 Confirm = t.Callable[["BumpResult"], bool]
@@ -143,7 +143,7 @@ def run_bump(
     changelog_settings = config.active_changelog
 
     repo = GitRepo(runner=runner, root=root)
-    project = UvProject(runner=runner, root=root)
+    project = version_source(runner, root)
 
     if git:
         branch = repo.ensure_branch(git, notify)
@@ -199,7 +199,7 @@ def run_bump(
             next_version, config.commit_entries(commit_messages), today
         )
 
-    touched = [PYPROJECT]
+    touched = [project.manifest_name]
     if update:
         touched.append(relative_path(update.path, root))
 
@@ -234,7 +234,7 @@ def run_bump(
     if not confirm(result):
         return dc.replace(result, noop=True, cancelled=True)
 
-    lockfile_ignored = bool(git and repo.ignores(LOCKFILE))
+    lockfile_ignored = bool(git and repo.ignores(project.lockfile_name))
     applied = project.apply(plan, frozen=lockfile_ignored)
     if applied != next_version:
         raise VommitError(
@@ -247,7 +247,7 @@ def run_bump(
 
     if git:
         if project.lockfile.exists() and not lockfile_ignored:
-            touched.append(LOCKFILE)
+            touched.append(project.lockfile_name)
         try:
             repo.add(touched)
         except VommitError as error:

@@ -6,9 +6,11 @@ Vommit automates version bumps, changelogs, Git releases, builds, and
 publishing for uv-based Python packages using Conventional Commits.
 
 Vommit requires Python 3.12 or newer, [uv](https://docs.astral.sh/uv/) 0.7 or
-newer, and a static `[project].version` in `pyproject.toml`. Automatic version selection and
-the default release workflow also expect a Git repository, but this can be
-disabled via config.
+newer, and a static `[project].version` in `pyproject.toml`, or, for a project
+built by maturin, a version in `Cargo.toml` (see
+[Crate-backed projects](#crate-backed-projects-maturin)). Automatic version
+selection and the default release workflow also expect a Git repository, but
+this can be disabled via config.
 
 ## Getting started
 
@@ -206,6 +208,41 @@ yet, `vommit init` runs `uv init` first.
 second version behind. It offers the same fix for `dynamic = ["version"]`, which
 must be frozen before Vommit can bump it. Nothing is rewritten without being
 asked; `vommit setup --non-interactive` prints the proposed change and stops.
+
+#### Crate-backed projects (maturin)
+
+A project built by [maturin](https://www.maturin.rs/) keeps its version in
+`Cargo.toml` and leaves `pyproject.toml` on `dynamic = ["version"]`, which
+`uv version` refuses outright. Vommit recognises that combination and bumps
+`[package].version` instead, carrying the new version into `Cargo.lock` and
+committing both. No configuration is involved: it applies when the build backend
+is `maturin`, `[project]` declares the version dynamic, and `Cargo.toml` states
+one. A Python package that merely vendors a crate still releases
+`[project].version`.
+
+Versions are written as SemVer and read back as PEP 440, which is the same
+translation maturin performs, so the tag and the wheel always agree: Vommit
+plans `3.11.0rc1`, writes `3.11.0-rc.1`, and maturin builds
+`your_pkg-3.11.0rc1.whl`. Epochs, post-releases, dev-releases, and local versions,
+which SemVer cannot express, are refused before anything is written rather
+than published under a different number.
+
+#### Build checks
+
+`setup` also reports what would go wrong at build time, because `build` runs
+*after* the bump: a broken build is discovered once the version has been
+written, the changelog rewritten and the commit tagged. It warns when
+`commands.build` runs `uv build` and
+
+- the `uv_build` backend would not find a module where it looks, which happens
+  after renaming `[project].name` without renaming the directory, or with a flat
+  layout, or with a single-file module. Point it somewhere else with
+  `module-name` / `module-root` under `[tool.uv.build-backend]`;
+- the project is built by maturin, where `uv build` produces one wheel for the
+  machine it ran on. Projects shipping several targets set `commands.build` to
+  their own `maturin build --target ...` script.
+
+These are warnings, not refusals; `setup` writes the configuration either way.
 
 The most useful settings to revisit are:
 

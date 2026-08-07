@@ -25,6 +25,7 @@ from .auth import (
     mask,
     verify_token,
 )
+from .build import build_warnings
 from .bump import BumpRequest, BumpResult, always, run_bump, select_level
 from .changelog import Changelog
 from .config import DERIVE_BRANCH, TOML_KEY, Config
@@ -61,6 +62,7 @@ from .scaffold import (
 )
 from .shell import ContextRunner
 from .undo import UndoPlan, UndoResult, run_undo
+from .versioning import CargoProject, version_source
 
 SetupMode = t.Literal["missing", "all"]
 MigrateChoice = t.Literal["interactive", "copy", "stop"]
@@ -390,7 +392,40 @@ def setup(
                 config = Config.interactive(config, present_paths=present_paths)
 
         _write_config(c, config, root, pyproject, branch)
-        _offer_version_files(root, pyproject, non_interactive)
+        # a crate-backed project keeps `dynamic = ["version"]` on purpose, so the
+        # offer below -- which exists to make [project].version bumpable -- has
+        # nothing to fix and would report the deliberate shape as a problem
+        if _report_version_source(c, root):
+            _offer_version_files(root, pyproject, non_interactive)
+        _report_build(root, config)
+
+
+def _report_version_source(c: Context, root: Path) -> bool:
+    """
+    Whether the version is `[project].version`, saying so when it is not.
+
+    Worth stating out loud: everything else vommit prints talks about
+    pyproject.toml, and a bump that edits a different file is a surprise the
+    first time it happens.
+    """
+    source = version_source(ContextRunner(c), root)
+    if not isinstance(source, CargoProject):
+        return True
+    rich.print(
+        f"[blue]The version comes from {source.manifest_name} "
+        f"({escape('`[package].version`')}), so that is what `vommit bump` "
+        f'moves; pyproject.toml keeps `dynamic = ["version"]`.[/blue]'
+    )
+    return False
+
+
+def _report_build(root: Path, config: Config) -> None:
+    """
+    Say what would go wrong at build time, while nothing has been released yet.
+    """
+    command = config.commands.build if config.commands else ""
+    for warning in build_warnings(root, command):
+        rich.print(f"[yellow]{escape(warning)}[/yellow]")
 
 
 def _offer_version_files(root: Path, pyproject: Path, non_interactive: bool) -> None:
