@@ -180,7 +180,7 @@ def test_apply_relocks_only_when_there_is_a_lockfile(tmp_path):
 
     (tmp_path / "Cargo.lock").write_text("")
     project.apply_bump("minor")
-    assert runner.ran("cargo update --workspace --offline")
+    assert runner.ran("cargo update --workspace")
 
 
 def test_apply_does_not_relock_when_the_lockfile_is_ignored(tmp_path):
@@ -238,7 +238,7 @@ def test_version_source_honors_a_configured_manifest_path(tmp_path):
 
     source.apply_bump("minor")
     assert source.current_version() == "3.11.0"
-    update = "cargo update --workspace --offline"
+    update = "cargo update --workspace"
     assert runner.ran(f"{update} --manifest-path {rust / 'Cargo.toml'}")
 
 

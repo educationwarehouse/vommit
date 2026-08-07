@@ -409,9 +409,9 @@ class CargoProject(VersionSource):
         """
         Carry the new version into `Cargo.lock`, the way `uv version` relocks.
 
-        Offline on purpose: the version of a workspace member is the only thing
-        that changed, so resolving it needs no index, and a release should not
-        quietly pick up new dependency versions on the way past.
+        `--workspace` keeps this to what the manifest already pins -- a bump
+        moves no dependency versions. Online, because a dependency pinned to a
+        git checkout cannot resolve offline.
         """
         if not self.lockfile.exists():
             return
@@ -420,7 +420,6 @@ class CargoProject(VersionSource):
                 "cargo",
                 "update",
                 "--workspace",
-                "--offline",
                 "--manifest-path",
                 str(self.manifest),
             ]
@@ -461,9 +460,7 @@ def _maturin_manifest(pyproject: Path) -> Path | None:
         return None
     tool = tomlkit.parse(pyproject.read_text()).get("tool")
     maturin = tool.get("maturin") if isinstance(tool, dict) else None
-    configured = (
-        maturin.get("manifest-path") if isinstance(maturin, dict) else None
-    )
+    configured = maturin.get("manifest-path") if isinstance(maturin, dict) else None
     return pyproject.parent / str(configured) if configured else None
 
 
