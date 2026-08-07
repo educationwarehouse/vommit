@@ -2,6 +2,11 @@
 
 <!-- next-version-placeholder -->
 
+## v0.2.0 (2026-08-07)
+
+### Feature
+* version sources beyond pyproject.toml (e.g. Cargo.toml for maturin) (#15)
+
 ## v0.1.2 (2026-08-03)
 
 ### Fix
