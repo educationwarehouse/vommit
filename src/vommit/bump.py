@@ -41,6 +41,7 @@ class BumpRequest:
     prerelease: bool = False
     noop: bool = False
     allow_dirty: bool = False
+    no_changelog: bool = False
     undo: bool = False
 
     def __post_init__(self) -> None:
@@ -185,11 +186,16 @@ def run_bump(
 
     changelog = (
         Changelog(settings=changelog_settings, root=root)
-        if changelog_settings
+        if changelog_settings and not request.no_changelog
         else None
     )
     update: ChangelogUpdate | None = None
-    if changelog_settings and prerelease and not changelog_settings.include_prereleases:
+    if (
+        changelog_settings
+        and not request.no_changelog
+        and prerelease
+        and not changelog_settings.include_prereleases
+    ):
         notify(
             f"{next_version} is a prerelease; its changes stay unlisted until "
             "the next release."

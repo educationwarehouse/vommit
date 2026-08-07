@@ -714,6 +714,7 @@ def bump(
     noop: bool = False,
     version: str | None = None,
     allow_dirty: bool = False,
+    no_changelog: bool = False,
     undo: bool = False,
     yes: bool = False,
 ) -> str | None:
@@ -754,6 +755,7 @@ def bump(
                 prerelease=prerelease,
                 noop=noop,
                 allow_dirty=allow_dirty,
+                no_changelog=no_changelog,
             ),
             notify=_notify,
             confirm=_asker(config, yes, _bump_question),
@@ -909,6 +911,7 @@ def release(
     version: str | None = None,
     allow_dirty: bool = False,
     no_bump: bool = False,
+    no_changelog: bool = False,
     yes: bool = False,
 ) -> str | None:
     """
@@ -934,6 +937,7 @@ def release(
                     prerelease=prerelease,
                     noop=noop,
                     allow_dirty=allow_dirty,
+                    no_changelog=no_changelog,
                 ),
                 no_bump=no_bump,
             ),
