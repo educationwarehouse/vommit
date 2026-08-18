@@ -105,6 +105,7 @@ stands. Build output such as `dist/` should be ignored by Git.
 | `--prerelease` | Create or advance a prerelease |
 | `--version VERSION` | Set an explicit version |
 | `--allow-dirty` | Release despite uncommitted changes |
+| `--edit` | Write the changelog entry yourself before releasing |
 | `--yes` | Skip confirmations |
 | `--noop` | Preview the version, changelog, and commands without running the release |
 | `--no-bump` | Run the release pipeline for the current version; useful after a failed upload. Cannot be combined with a version-selection flag |
@@ -182,8 +183,8 @@ are patch by default. Any other type, `docs` included, bumps nothing on its own;
 add it to `version_bump_map` to change that. A `!` in a commit header or a
 `BREAKING CHANGE` footer counts as a breaking change; set `allow_breaking_bang`
 or `allow_breaking_footer` to `false` to ignore either. Use the version-selection,
-`--prerelease`, `--allow-dirty`, `--noop`, and `--yes` flags to override or
-preview the result.
+`--prerelease`, `--allow-dirty`, `--noop`, `--edit`, and `--yes` flags to
+override or preview the result.
 
 It updates the project version, changelog, and (when Git integration is enabled)
 creates the configured release commit and tag. `vommit bump --undo` takes back
@@ -193,6 +194,23 @@ been pushed.
 Prereleases do not receive separate changelog entries by default; their changes
 are included when the next stable release is made. Set
 `changelog.include_prereleases = true` to list them separately.
+
+### Writing the entry yourself
+
+Generated entries say what the commits said, which is not always what the
+release means. `vommit bump --edit` and `vommit release --edit` open the
+generated entry in your editor first; what you save is what gets written,
+committed and tagged, in the same release commit. The confirmation offers the
+same thing without planning for it up front: answer `edit the changelog entry`
+instead of yes or no, and Vommit asks again once you are done.
+
+The editor is resolved the way git resolves its own: `$GIT_EDITOR`, then
+`core.editor`, then `$VISUAL`, then `$EDITOR`, then whatever is installed. An
+editor that returns before the file is saved (`code`, `subl`) needs its
+`--wait` flag, or the entry comes back untouched. HTML comments are stripped
+from what you save. Saving an empty entry cancels the release; so does closing
+the editor with an error. Editing needs a terminal, so `--edit` is refused in
+CI rather than silently skipped.
 
 ## Configuration
 

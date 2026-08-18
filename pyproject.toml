@@ -1,3 +1,7 @@
+[build-system]
+requires = ["uv_build>=0.11.3,<0.12.0"]
+build-backend = "uv_build"
+
 [project]
 name = "vommit"
 version = "0.3.1"
@@ -36,14 +40,15 @@ dev = [
 [project.entry-points.edwh]
 vommit = "vommit.tasks"
 
-[build-system]
-requires = ["uv_build>=0.11.3,<0.12.0"]
-build-backend = "uv_build"
-
 [tool.pytest.ini_options]
 pythonpath = [
     "src",
 ]
+
+
+[tool.edwh.test]
+# measure coverage over src/ only, matching su6
+directory = "src"
 
 [tool.ruff]
 include = [

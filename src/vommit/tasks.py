@@ -26,9 +26,17 @@ from .auth import (
     verify_token,
 )
 from .build import build_warnings
-from .bump import BumpRequest, BumpResult, always, run_bump, select_level
+from .bump import (
+    BumpAnswer,
+    BumpRequest,
+    BumpResult,
+    always,
+    run_bump,
+    select_level,
+)
 from .changelog import Changelog
 from .config import DERIVE_BRANCH, TOML_KEY, Config
+from .editor import edit_entry
 from .errors import VommitError
 from .git import GitRepo
 from .helpers import relative_path
@@ -231,6 +239,46 @@ def _asker[ResultT](
         return bool(questionary.confirm(text, default=True).unsafe_ask())
 
     return ask
+
+
+#: The answers the release question takes, and what each one means.
+BUMP_CHOICES: dict[str, BumpAnswer] = {
+    "yes": "yes",
+    "edit the changelog entry": "edit",
+    "no": "no",
+}
+
+
+def _bump_asker(
+    config: Config, yes: bool
+) -> t.Callable[[BumpResult], bool | BumpAnswer]:
+    """
+    The release question, with the changelog entry an answer of its own.
+
+    Editing is only offered when there is an entry to edit; without one the
+    question is the same two-way confirmation every other step asks.
+    """
+    if yes or not config.confirm:
+        return always
+
+    def ask(result: BumpResult) -> bool | BumpAnswer:
+        text = _bump_question(result)
+        if not sys.stdin.isatty():
+            rich.print(f"[yellow]{text} No terminal to ask on; pass --yes.[/yellow]")
+            return False
+        if not result.entry:
+            return bool(questionary.confirm(text, default=True).unsafe_ask())
+
+        choice = questionary.select(
+            text, choices=list(BUMP_CHOICES), default="yes"
+        ).unsafe_ask()
+        return BUMP_CHOICES[str(choice)]
+
+    return ask
+
+
+def _editor(c: Context) -> t.Callable[[str], str]:
+    return lambda entry: edit_entry(entry, ContextRunner(c), _notify)
 
 
 @task(
@@ -715,6 +763,7 @@ def bump(
     version: str | None = None,
     allow_dirty: bool = False,
     no_changelog: bool = False,
+    edit: bool = False,
     undo: bool = False,
     yes: bool = False,
 ) -> str | None:
@@ -723,7 +772,8 @@ def bump(
 
     Nothing is written until every check has passed, so a failed run leaves the
     project as it was. Use --noop to see the new version and changelog entry,
-    --yes to skip the confirmation, and --undo to take the last release back.
+    --edit to write the entry yourself, --yes to skip the confirmation, and
+    --undo to take the last release back.
     """
     root = Path.cwd()
     config = Config.from_pyproject(root)
@@ -756,9 +806,11 @@ def bump(
                 noop=noop,
                 allow_dirty=allow_dirty,
                 no_changelog=no_changelog,
+                edit=edit,
             ),
             notify=_notify,
-            confirm=_asker(config, yes, _bump_question),
+            confirm=_bump_asker(config, yes),
+            edit=_editor(c),
         )
 
     if result is None:
@@ -912,6 +964,7 @@ def release(
     allow_dirty: bool = False,
     no_bump: bool = False,
     no_changelog: bool = False,
+    edit: bool = False,
     yes: bool = False,
 ) -> str | None:
     """
@@ -920,7 +973,8 @@ def release(
     Runs the bump, then the configured clean and build commands, then pushes the
     commit and its tag, and publishes last: a failure before the push can still
     be undone, and PyPI never receives a version that the remote does not have.
-    Use --noop to see the plan, and --no-bump to publish the current version.
+    Use --noop to see the plan, --edit to write the changelog entry yourself,
+    and --no-bump to publish the current version.
     """
     root = Path.cwd()
     config = Config.from_pyproject(root)
@@ -938,11 +992,13 @@ def release(
                     noop=noop,
                     allow_dirty=allow_dirty,
                     no_changelog=no_changelog,
+                    edit=edit,
                 ),
                 no_bump=no_bump,
             ),
             notify=_notify,
-            confirm=_asker(config, yes, _bump_question),
+            confirm=_bump_asker(config, yes),
+            edit=_editor(c),
             confirm_version=lambda current: _confirm(
                 f"No version-worthy changes found; publish {current} as it is?",
                 yes=yes,

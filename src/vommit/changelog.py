@@ -148,3 +148,13 @@ class Changelog:
             entry=entry,
             content=self.insert(self.read(), entry),
         )
+
+    def replan(self, update: ChangelogUpdate, entry: str) -> ChangelogUpdate:
+        """
+        The same pending write, around a different entry.
+
+        Going back through `insert` rather than patching the content keeps the
+        two in step: a hand-written entry lands exactly where the generated one
+        would have, and still nothing is written.
+        """
+        return dc.replace(update, entry=entry, content=self.insert(self.read(), entry))
