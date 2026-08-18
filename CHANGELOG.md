@@ -2,6 +2,11 @@
 
 <!-- next-version-placeholder -->
 
+## v0.4.0 (2026-08-18)
+
+### Feature
+* support editing a changelog entry during a bump or release
+
 ## v0.3.1 (2026-08-07)
 
 ### Fix
