@@ -273,10 +273,10 @@ These are warnings, not refusals; `setup` writes the configuration either way.
 `setup` offers to fix each one it can change without losing information: the
 backend swap, the pin, and `hatch build` / `hatch publish` when those are the
 whole command. The Hatchling swap is offered only for a project whose artifact is
-described by nothing but `[build-system]` — a `[tool.hatch.build]`,
+described by nothing but `[build-system]`. A `[tool.hatch.build]`,
 `[tool.hatch.version]` or `[tool.hatch.metadata]` table, a dynamic version, a
 second build requirement, or a layout `uv_build` does not recognise has no
-mechanical translation, and the warning names what is in the way instead.
+mechanical translation, so the warning names what is in the way instead.
 
 Decline the fix and `setup` offers the other way out: silencing the id for this
 project.
