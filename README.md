@@ -249,18 +249,42 @@ than published under a different number.
 
 `setup` also reports what would go wrong at build time, because `build` runs
 *after* the bump: a broken build is discovered once the version has been
-written, the changelog rewritten and the commit tagged. It warns when
-`commands.build` runs `uv build` and
+written, the changelog rewritten and the commit tagged. `release` repeats the
+same warnings before it bumps anything, so a project that never re-runs `setup`
+still hears them.
 
-- the `uv_build` backend would not find a module where it looks, which happens
-  after renaming `[project].name` without renaming the directory, or with a flat
-  layout, or with a single-file module. Point it somewhere else with
-  `module-name` / `module-root` under `[tool.uv.build-backend]`;
-- the project is built by maturin, where `uv build` produces one wheel for the
-  machine it ran on. Projects shipping several targets set `commands.build` to
-  their own `maturin build --target ...` script.
+Warnings about the build command, when `commands.build` runs `uv build`:
+
+| Id | Reported when |
+|---|---|
+| `uv-build-module-missing` | The `uv_build` backend would not find a module where it looks, which happens after renaming `[project].name` without renaming the directory, or with a flat layout, or with a single-file module. Point it somewhere else with `module-name` / `module-root` under `[tool.uv.build-backend]`. |
+| `maturin-uv-build` | The project is built by maturin, where `uv build` produces one wheel for the machine it ran on. Projects shipping several targets set `commands.build` to their own `maturin build --target ...` script. |
+
+Warnings about the build backend, whatever the build command is:
+
+| Id | Reported when |
+|---|---|
+| `hatchling-backend` | `[build-system]` builds with Hatchling instead of `uv_build`. |
+| `uv-build-pin` | `build-backend = "uv_build"` with a `requires` entry outside the range Vommit builds against (`uv_build>=0.12.4,<0.13`), or with none at all. |
+| `hatch-build-command` | `commands.build` runs `hatch build`. |
 
 These are warnings, not refusals; `setup` writes the configuration either way.
+
+`setup` offers to fix each one it can change without losing information: the
+backend swap, the pin, and `hatch build` / `hatch publish` when those are the
+whole command. The Hatchling swap is offered only for a project whose artifact is
+described by nothing but `[build-system]` — a `[tool.hatch.build]`,
+`[tool.hatch.version]` or `[tool.hatch.metadata]` table, a dynamic version, a
+second build requirement, or a layout `uv_build` does not recognise has no
+mechanical translation, and the warning names what is in the way instead.
+
+Decline the fix and `setup` offers the other way out: silencing the id for this
+project.
+
+```toml
+[tool.vommit]
+ignore = ["hatchling-backend", "uv-build-pin"]
+```
 
 The most useful settings to revisit are:
 
@@ -280,6 +304,7 @@ The most useful settings to revisit are:
 | `changelog.placeholder`, `changelog.entry_title_format` | Match the insertion marker and format generated entries. |
 | `pypi.enabled`, `pypi.use_keyring` | Control publishing and credential storage. |
 | `commands.clean`, `commands.build`, `commands.publish`, `commands.post_publish` | Define the release pipeline commands. |
+| `ignore` | Silence build checks by id (see [Build checks](#build-checks)). |
 
 ## Migrating from python-semantic-release v7
 

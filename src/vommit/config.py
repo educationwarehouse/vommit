@@ -388,6 +388,12 @@ class Config(InteractiveConfig, Defaultable):
 
     confirm: t.Annotated[bool, "Ask before writing a release?"] = True
 
+    # Build-configuration warnings this project has decided not to hear again,
+    # by the ids `vommit.build` gives them. A list rather than a boolean per
+    # check: the checks keep coming, and a table of `warn-x = false` keys grows
+    # one entry per check whether or not anyone cares about it.
+    ignore: list[str] = []
+
     # `docs` is deliberately absent: a documentation-only change is not worth a
     # release. A project that wants one adds `docs = "patch"` to this table;
     # `setup` writes the whole map out, so there is something to edit.
@@ -397,6 +403,18 @@ class Config(InteractiveConfig, Defaultable):
         "fix": "patch",
         "perf": "patch",
     }
+
+    def ignoring(self, warning_id: str) -> t.Self:
+        """
+        The same config, with one more warning id silenced.
+
+        Assigns a new list instead of appending: the default lives on the class,
+        so appending to it would silence that warning for every config loaded
+        afterwards in this process.
+        """
+        if warning_id not in self.ignore:
+            self.ignore = [*self.ignore, warning_id]
+        return self
 
     @property
     def active_git(self) -> GitConfig | None:
