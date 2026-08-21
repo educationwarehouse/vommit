@@ -25,7 +25,7 @@ from .auth import (
     mask,
     verify_token,
 )
-from .build import build_warnings
+from .build import ProjectWarning, project_warnings
 from .bump import (
     BumpAnswer,
     BumpRequest,
@@ -445,7 +445,7 @@ def setup(
         # nothing to fix and would report the deliberate shape as a problem
         if _report_version_source(c, root):
             _offer_version_files(root, pyproject, non_interactive)
-        _report_build(root, config)
+        _report_build(root, pyproject, config, non_interactive)
 
 
 def _report_version_source(c: Context, root: Path) -> bool:
@@ -467,13 +467,45 @@ def _report_version_source(c: Context, root: Path) -> bool:
     return False
 
 
-def _report_build(root: Path, config: Config) -> None:
+def _report_build(
+    root: Path,
+    pyproject: Path,
+    config: Config,
+    non_interactive: bool,
+) -> None:
     """
-    Say what would go wrong at build time, while nothing has been released yet.
+    Say what would go wrong at build time, while nothing has been released yet,
+    and offer the two ways out: fix it, or stop being told about it.
+
+    The ignore key is offered second and only when the fix was declined (or
+    there is none to offer): silencing a warning someone would have fixed in
+    one keystroke is the worse of the two outcomes.
     """
-    command = config.commands.build if config.commands else ""
-    for warning in build_warnings(root, command):
-        rich.print(f"[yellow]{escape(warning)}[/yellow]")
+    for warning in project_warnings(root, config):
+        rich.print(f"[yellow]{escape(warning.message)}[/yellow]")
+        if non_interactive:
+            continue
+        if _offer_fix(warning):
+            continue
+        _offer_ignore(warning, config, pyproject)
+
+
+def _offer_fix(warning: ProjectWarning) -> bool:
+    if not (fix := warning.fix):
+        return False
+    if not _confirm(fix.question, yes=False):
+        return False
+    fix.apply()
+    rich.print(f"[green]{escape(fix.done)}[/green]")
+    return True
+
+
+def _offer_ignore(warning: ProjectWarning, config: Config, pyproject: Path) -> None:
+    question = f'Stop reporting "{warning.id}" for this project?'
+    if not _confirm(question, yes=False, default=False):
+        return
+    config.ignoring(warning.id).write_to_pyproject(pyproject)
+    rich.print(f'[blue]Added "{escape(warning.id)}" to [tool.vommit] ignore.[/blue]')
 
 
 def _offer_version_files(root: Path, pyproject: Path, non_interactive: bool) -> None:
@@ -980,6 +1012,13 @@ def release(
     config = Config.from_pyproject(root)
 
     with _reported():
+        # said before the bump, so a warning about the artifact arrives while
+        # nothing has been written yet. Report-only here: a release is the wrong
+        # moment to be asked a configuration question, and `setup` is where the
+        # same warnings come with the offer to act on them.
+        for warning in project_warnings(root, config):
+            rich.print(f"[yellow]{escape(warning.message)}[/yellow]")
+
         result = run_release(
             config=config,
             runner=ContextRunner(c),
