@@ -368,6 +368,19 @@ def test_wrong_branch_stops_before_anything_is_written(sandbox):
     assert version_of(sandbox) == "0.1.0"
 
 
+def test_allow_branch_bumps_from_a_feature_branch(sandbox):
+    sandbox.git("checkout", "-b", "feature/x")
+    sandbox.commits("feat: something new")
+    messages: list[str] = []
+
+    result = bump(sandbox, notify=messages.append, allow_branch=True)
+
+    assert result.version == "0.2.0"
+    assert "expected 'main'" in messages[0]
+    # the freshness check follows the branch we stayed on, not the configured one
+    assert "No upstream branch 'origin/feature/x'" in messages[1]
+
+
 def test_being_behind_upstream_stops_the_bump(sandbox):
     sandbox.commits("feat: something new")
     sandbox.push_upstream("feat: upstream work")

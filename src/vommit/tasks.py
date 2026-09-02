@@ -762,6 +762,7 @@ def bump(
     noop: bool = False,
     version: str | None = None,
     allow_dirty: bool = False,
+    allow_branch: bool = False,
     no_changelog: bool = False,
     edit: bool = False,
     undo: bool = False,
@@ -772,7 +773,8 @@ def bump(
 
     Nothing is written until every check has passed, so a failed run leaves the
     project as it was. Use --noop to see the new version and changelog entry,
-    --edit to write the entry yourself, --yes to skip the confirmation, and
+    --edit to write the entry yourself, --yes to skip the confirmation,
+    --allow-branch to bump from a branch other than the release branch, and
     --undo to take the last release back.
     """
     root = Path.cwd()
@@ -805,6 +807,7 @@ def bump(
                 prerelease=prerelease,
                 noop=noop,
                 allow_dirty=allow_dirty,
+                allow_branch=allow_branch,
                 no_changelog=no_changelog,
                 edit=edit,
             ),
@@ -962,6 +965,7 @@ def release(
     noop: bool = False,
     version: str | None = None,
     allow_dirty: bool = False,
+    allow_branch: bool = False,
     no_bump: bool = False,
     no_changelog: bool = False,
     edit: bool = False,
@@ -974,7 +978,9 @@ def release(
     commit and its tag, and publishes last: a failure before the push can still
     be undone, and PyPI never receives a version that the remote does not have.
     Use --noop to see the plan, --edit to write the changelog entry yourself,
-    and --no-bump to publish the current version.
+    --allow-branch to release from a branch other than the release branch (a
+    prerelease cut from a feature branch), and --no-bump to publish the current
+    version.
     """
     root = Path.cwd()
     config = Config.from_pyproject(root)
@@ -991,6 +997,7 @@ def release(
                     prerelease=prerelease,
                     noop=noop,
                     allow_dirty=allow_dirty,
+                    allow_branch=allow_branch,
                     no_changelog=no_changelog,
                     edit=edit,
                 ),

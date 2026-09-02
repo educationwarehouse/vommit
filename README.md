@@ -99,12 +99,19 @@ the build would include them, but the pushed commit would not. Commit or stash
 your work first, or pass `--allow-dirty` to publish the working tree as it
 stands. Build output such as `dist/` should be ignored by Git.
 
+A release also refuses to run from a branch other than `git.branch`. Pass
+`--allow-branch` to release from the branch that is checked out instead — a
+prerelease cut from a feature branch, typically. It stays where it is rather
+than switching, and the freshness check then runs against that branch's
+upstream; `git.on_wrong_branch` is left alone.
+
 | Flag | Meaning |
 |---|---|
 | `--major`, `--minor`, `--patch` | Choose the version increment |
 | `--prerelease` | Create or advance a prerelease |
 | `--version VERSION` | Set an explicit version |
 | `--allow-dirty` | Release despite uncommitted changes |
+| `--allow-branch` | Release from the branch that is checked out, whatever `git.branch` says |
 | `--edit` | Write the changelog entry yourself before releasing |
 | `--yes` | Skip confirmations |
 | `--noop` | Preview the version, changelog, and commands without running the release |
@@ -183,7 +190,8 @@ are patch by default. Any other type, `docs` included, bumps nothing on its own;
 add it to `version_bump_map` to change that. A `!` in a commit header or a
 `BREAKING CHANGE` footer counts as a breaking change; set `allow_breaking_bang`
 or `allow_breaking_footer` to `false` to ignore either. Use the version-selection,
-`--prerelease`, `--allow-dirty`, `--noop`, `--edit`, and `--yes` flags to
+`--prerelease`, `--allow-dirty`, `--allow-branch`, `--noop`, `--edit`, and
+`--yes` flags to
 override or preview the result.
 
 It updates the project version, changelog, and (when Git integration is enabled)
@@ -272,7 +280,7 @@ The most useful settings to revisit are:
 | `allow_breaking_bang`, `allow_breaking_footer` | Turn either breaking-change marker on or off. |
 | `git.enabled` | Turn off Git integration entirely: no commit, tag, or push. |
 | `git.origin` | Select the remote to push to. |
-| `git.branch`, `git.on_wrong_branch` | Select the release branch and how to handle a mismatch. |
+| `git.branch`, `git.on_wrong_branch` | Select the release branch and how to handle a mismatch (`--allow-branch` overrides it for one run). |
 | `git.tag_format`, `git.commit_format` | Format the release tag and commit message. An empty tag format disables tagging; a release needs a commit format when Git is enabled. |
 | `git.commit_author` | Author the release commit as `Name <email>` instead of as yourself. |
 | `changelog.enabled` | Turn off changelog updates. |

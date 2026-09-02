@@ -47,6 +47,7 @@ class BumpRequest:
     prerelease: bool = False
     noop: bool = False
     allow_dirty: bool = False
+    allow_branch: bool = False
     no_changelog: bool = False
     edit: bool = False
     undo: bool = False
@@ -159,7 +160,7 @@ def run_bump(
     project = version_source(runner, root)
 
     if git:
-        branch = repo.ensure_branch(git, notify)
+        branch = repo.ensure_branch(git, notify, request.allow_branch)
         repo.ensure_up_to_date(git, branch, notify)
 
     # reading history is how the bump level is found at all, so it happens even

@@ -172,7 +172,11 @@ def run_release(
     bumped = None
     if request.no_bump:
         if git:
-            repo.ensure_up_to_date(git, repo.ensure_branch(git, notify), notify)
+            repo.ensure_up_to_date(
+                git,
+                repo.ensure_branch(git, notify, request.bump.allow_branch),
+                notify,
+            )
         version = _current_version(project)
     else:
         bumped = run_bump(

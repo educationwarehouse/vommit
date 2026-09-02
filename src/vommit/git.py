@@ -133,14 +133,29 @@ class GitRepo:
             )
         return derived
 
-    def ensure_branch(self, git: GitConfig, on_message: t.Callable[[str], None]) -> str:
+    def ensure_branch(
+        self,
+        git: GitConfig,
+        on_message: t.Callable[[str], None],
+        allow_branch: bool = False,
+    ) -> str:
         """
         Make sure we are on the release branch; returns the branch we end up on.
+
+        `allow_branch` is the per-run answer to a configured `error`: it stays
+        on the branch that is checked out and only says so, which is what a
+        prerelease cut from a feature branch needs. It deliberately does not
+        turn into a `switch`: a run that was told to accept this branch has no
+        business moving the checkout to another one.
         """
         target = self.resolve_branch(git)
         current = self.current_branch()
         if current == target:
             return target
+
+        if allow_branch:
+            on_message(f"On branch '{current}', expected '{target}'; continuing.")
+            return current
 
         if git.on_wrong_branch == "switch":
             self._checked("checkout", target, action=f"switch to branch '{target}'")
@@ -153,7 +168,8 @@ class GitRepo:
 
         raise VommitError(
             f"On branch '{current}', expected '{target}'. "
-            "Switch branches, or set `on_wrong_branch` to 'warn'/'switch'."
+            "Switch branches, pass --allow-branch to release from this one, "
+            "or set `on_wrong_branch` to 'warn'/'switch'."
         )
 
     def ref_exists(self, ref: str) -> bool:
