@@ -2,6 +2,11 @@
 
 <!-- next-version-placeholder -->
 
+## v0.6.0 (2026-09-02)
+
+### Feature
+* **release:** allow releases from the (non-main) current branch via flag
+
 ## v0.5.0 (2026-08-21)
 
 ### Feature
