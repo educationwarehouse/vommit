@@ -377,3 +377,86 @@ def test_ignoring_does_not_leak_into_the_next_config():
     """
     config().ignoring("hatchling-backend")
     assert Config.default().ignore == []
+
+
+def test_a_project_without_a_commands_table_has_no_commands_to_judge(tmp_path):
+    root = project(
+        tmp_path,
+        '[project]\nname = "mypkg"\nversion = "1.0.0"\n' + HATCHLING_BACKEND,
+    )
+    settled = Config.default()
+    settled.commands = None
+
+    assert command_warnings(root, settled) == []
+    # the backend still is what it is; only the command checks go quiet
+    assert ids(project_warnings(root, settled)) == {"hatchling-backend"}
+
+
+def test_a_build_command_that_is_already_uv_is_left_alone(tmp_path):
+    root = project(
+        tmp_path,
+        '[project]\nname = "mypkg"\nversion = "1.0.0"\n' + UV_BUILD_BACKEND,
+    )
+    assert command_warnings(root, config(build="uv build")) == []
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        '[project]\nname = "mypkg"\nversion = "1.0.0"\n' + HATCHLING_BACKEND,
+        '[project]\nname = "mypkg"\nversion = "1.0.0"\n' + UV_BUILD_BACKEND,
+    ],
+)
+def test_a_fix_gives_up_when_the_build_system_is_gone(tmp_path, body):
+    """
+    The fix re-reads the file it was offered on, so an edit in between (or a
+    `[build-system]` that was never a table) must not have it write nonsense.
+    """
+    root = project(tmp_path, body)
+    (warning,) = backend_warnings(root)
+    (root / "pyproject.toml").write_text('[project]\nname = "mypkg"\n')
+
+    warning.fix.apply()
+
+    assert (root / "pyproject.toml").read_text() == '[project]\nname = "mypkg"\n'
+
+
+def test_a_requires_that_is_not_a_list_is_replaced_wholesale(tmp_path):
+    """
+    `requires = "uv_build"` is a typo git accepts and pip does not; there is no
+    entry to rewrite in it, so the pin replaces the value.
+    """
+    root = project(
+        tmp_path,
+        '[project]\nname = "mypkg"\nversion = "1.0.0"\n[build-system]\n'
+        'requires = "uv_build"\nbuild-backend = "uv_build"\n',
+    )
+    (warning,) = backend_warnings(root)
+    assert warning.id == "uv-build-pin"
+    assert "is missing" in warning.message
+
+    warning.fix.apply()
+
+    assert (
+        f'requires = ["{RECOMMENDED_UV_BUILD_REQUIREMENT}"]'
+        in (root / "pyproject.toml").read_text()
+    )
+    assert backend_warnings(root) == []
+
+
+def test_an_unparsable_requirement_is_stepped_over(tmp_path):
+    root = project(
+        tmp_path,
+        '[project]\nname = "mypkg"\nversion = "1.0.0"\n[build-system]\n'
+        'requires = ["not a requirement!", "uv_build>=0.11.3,<0.12.0"]\n'
+        'build-backend = "uv_build"\n',
+    )
+    (warning,) = backend_warnings(root)
+    assert warning.id == "uv-build-pin"
+
+    warning.fix.apply()
+
+    body = (root / "pyproject.toml").read_text()
+    assert '"not a requirement!"' in body
+    assert RECOMMENDED_UV_BUILD_REQUIREMENT in body
+    assert backend_warnings(root) == []
