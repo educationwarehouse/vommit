@@ -2,6 +2,14 @@
 
 <!-- next-version-placeholder -->
 
+## v0.5.0 (2026-08-21)
+
+### Feature
+* **build:** add build configuration checks and fixes
+
+### Documentation
+* **build:** document build checks and warning suppression
+
 ## v0.4.0 (2026-08-18)
 
 ### Feature

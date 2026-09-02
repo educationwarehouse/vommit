@@ -1,10 +1,10 @@
 [build-system]
-requires = ["uv_build>=0.11.3,<0.12.0"]
+requires = ["uv_build>=0.12.4,<0.13"]
 build-backend = "uv_build"
 
 [project]
 name = "vommit"
-version = "0.4.0"
+version = "0.5.0"
 description = "Vommit Oversees Making & Managing Installable Things"
 readme = "README.md"
 authors = [
