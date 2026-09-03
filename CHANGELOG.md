@@ -2,6 +2,11 @@
 
 <!-- next-version-placeholder -->
 
+## v0.6.1 (2026-09-03)
+
+### Fix
+* disable hooking `setup` for vommit to prevent `edwh setup` from triggering it
+
 ## v0.6.0 (2026-09-02)
 
 ### Feature
