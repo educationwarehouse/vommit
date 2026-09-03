@@ -351,7 +351,7 @@ def _report_scaffold(result: ScaffoldResult) -> None:
         rich.print("[blue]Nothing was pushed yet.[/blue]")
 
 
-@task()
+@task(hookable=False)
 def setup(
     c: Context,
     non_interactive: bool = False,
