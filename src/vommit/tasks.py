@@ -25,10 +25,18 @@ from .auth import (
     mask,
     verify_token,
 )
-from .build import build_warnings
-from .bump import BumpRequest, BumpResult, always, run_bump, select_level
+from .build import ProjectWarning, project_warnings
+from .bump import (
+    BumpAnswer,
+    BumpRequest,
+    BumpResult,
+    always,
+    run_bump,
+    select_level,
+)
 from .changelog import Changelog
 from .config import DERIVE_BRANCH, TOML_KEY, Config
+from .editor import edit_entry
 from .errors import VommitError
 from .git import GitRepo
 from .helpers import relative_path
@@ -233,6 +241,46 @@ def _asker[ResultT](
     return ask
 
 
+#: The answers the release question takes, and what each one means.
+BUMP_CHOICES: dict[str, BumpAnswer] = {
+    "yes": "yes",
+    "edit the changelog entry": "edit",
+    "no": "no",
+}
+
+
+def _bump_asker(
+    config: Config, yes: bool
+) -> t.Callable[[BumpResult], bool | BumpAnswer]:
+    """
+    The release question, with the changelog entry an answer of its own.
+
+    Editing is only offered when there is an entry to edit; without one the
+    question is the same two-way confirmation every other step asks.
+    """
+    if yes or not config.confirm:
+        return always
+
+    def ask(result: BumpResult) -> bool | BumpAnswer:
+        text = _bump_question(result)
+        if not sys.stdin.isatty():
+            rich.print(f"[yellow]{text} No terminal to ask on; pass --yes.[/yellow]")
+            return False
+        if not result.entry:
+            return bool(questionary.confirm(text, default=True).unsafe_ask())
+
+        choice = questionary.select(
+            text, choices=list(BUMP_CHOICES), default="yes"
+        ).unsafe_ask()
+        return BUMP_CHOICES[str(choice)]
+
+    return ask
+
+
+def _editor(c: Context) -> t.Callable[[str], str]:
+    return lambda entry: edit_entry(entry, ContextRunner(c), _notify)
+
+
 @task(
     # long flags only: a dozen parameters here left invoke deriving short flags
     # like `-y` for `--python`, and one collision produced a bare `--`
@@ -397,7 +445,7 @@ def setup(
         # nothing to fix and would report the deliberate shape as a problem
         if _report_version_source(c, root):
             _offer_version_files(root, pyproject, non_interactive)
-        _report_build(root, config)
+        _report_build(root, pyproject, config, non_interactive)
 
 
 def _report_version_source(c: Context, root: Path) -> bool:
@@ -419,13 +467,45 @@ def _report_version_source(c: Context, root: Path) -> bool:
     return False
 
 
-def _report_build(root: Path, config: Config) -> None:
+def _report_build(
+    root: Path,
+    pyproject: Path,
+    config: Config,
+    non_interactive: bool,
+) -> None:
     """
-    Say what would go wrong at build time, while nothing has been released yet.
+    Say what would go wrong at build time, while nothing has been released yet,
+    and offer the two ways out: fix it, or stop being told about it.
+
+    The ignore key is offered second and only when the fix was declined (or
+    there is none to offer): silencing a warning someone would have fixed in
+    one keystroke is the worse of the two outcomes.
     """
-    command = config.commands.build if config.commands else ""
-    for warning in build_warnings(root, command):
-        rich.print(f"[yellow]{escape(warning)}[/yellow]")
+    for warning in project_warnings(root, config):
+        rich.print(f"[yellow]{escape(warning.message)}[/yellow]")
+        if non_interactive:
+            continue
+        if _offer_fix(warning):
+            continue
+        _offer_ignore(warning, config, pyproject)
+
+
+def _offer_fix(warning: ProjectWarning) -> bool:
+    if not (fix := warning.fix):
+        return False
+    if not _confirm(fix.question, yes=False):
+        return False
+    fix.apply()
+    rich.print(f"[green]{escape(fix.done)}[/green]")
+    return True
+
+
+def _offer_ignore(warning: ProjectWarning, config: Config, pyproject: Path) -> None:
+    question = f'Stop reporting "{warning.id}" for this project?'
+    if not _confirm(question, yes=False, default=False):
+        return
+    config.ignoring(warning.id).write_to_pyproject(pyproject)
+    rich.print(f'[blue]Added "{escape(warning.id)}" to [tool.vommit] ignore.[/blue]')
 
 
 def _offer_version_files(root: Path, pyproject: Path, non_interactive: bool) -> None:
@@ -714,7 +794,9 @@ def bump(
     noop: bool = False,
     version: str | None = None,
     allow_dirty: bool = False,
+    allow_branch: bool = False,
     no_changelog: bool = False,
+    edit: bool = False,
     undo: bool = False,
     yes: bool = False,
 ) -> str | None:
@@ -723,7 +805,9 @@ def bump(
 
     Nothing is written until every check has passed, so a failed run leaves the
     project as it was. Use --noop to see the new version and changelog entry,
-    --yes to skip the confirmation, and --undo to take the last release back.
+    --edit to write the entry yourself, --yes to skip the confirmation,
+    --allow-branch to bump from a branch other than the release branch, and
+    --undo to take the last release back.
     """
     root = Path.cwd()
     config = Config.from_pyproject(root)
@@ -755,10 +839,13 @@ def bump(
                 prerelease=prerelease,
                 noop=noop,
                 allow_dirty=allow_dirty,
+                allow_branch=allow_branch,
                 no_changelog=no_changelog,
+                edit=edit,
             ),
             notify=_notify,
-            confirm=_asker(config, yes, _bump_question),
+            confirm=_bump_asker(config, yes),
+            edit=_editor(c),
         )
 
     if result is None:
@@ -910,8 +997,10 @@ def release(
     noop: bool = False,
     version: str | None = None,
     allow_dirty: bool = False,
+    allow_branch: bool = False,
     no_bump: bool = False,
     no_changelog: bool = False,
+    edit: bool = False,
     yes: bool = False,
 ) -> str | None:
     """
@@ -920,12 +1009,22 @@ def release(
     Runs the bump, then the configured clean and build commands, then pushes the
     commit and its tag, and publishes last: a failure before the push can still
     be undone, and PyPI never receives a version that the remote does not have.
-    Use --noop to see the plan, and --no-bump to publish the current version.
+    Use --noop to see the plan, --edit to write the changelog entry yourself,
+    --allow-branch to release from a branch other than the release branch (a
+    prerelease cut from a feature branch), and --no-bump to publish the current
+    version.
     """
     root = Path.cwd()
     config = Config.from_pyproject(root)
 
     with _reported():
+        # said before the bump, so a warning about the artifact arrives while
+        # nothing has been written yet. Report-only here: a release is the wrong
+        # moment to be asked a configuration question, and `setup` is where the
+        # same warnings come with the offer to act on them.
+        for warning in project_warnings(root, config):
+            rich.print(f"[yellow]{escape(warning.message)}[/yellow]")
+
         result = run_release(
             config=config,
             runner=ContextRunner(c),
@@ -937,12 +1036,15 @@ def release(
                     prerelease=prerelease,
                     noop=noop,
                     allow_dirty=allow_dirty,
+                    allow_branch=allow_branch,
                     no_changelog=no_changelog,
+                    edit=edit,
                 ),
                 no_bump=no_bump,
             ),
             notify=_notify,
-            confirm=_asker(config, yes, _bump_question),
+            confirm=_bump_asker(config, yes),
+            edit=_editor(c),
             confirm_version=lambda current: _confirm(
                 f"No version-worthy changes found; publish {current} as it is?",
                 yes=yes,

@@ -2,6 +2,24 @@
 
 <!-- next-version-placeholder -->
 
+## v0.6.0 (2026-09-02)
+
+### Feature
+* **release:** allow releases from the (non-main) current branch via flag
+
+## v0.5.0 (2026-08-21)
+
+### Feature
+* **build:** add build configuration checks and fixes
+
+### Documentation
+* **build:** document build checks and warning suppression
+
+## v0.4.0 (2026-08-18)
+
+### Feature
+* support editing a changelog entry during a bump or release
+
 ## v0.3.1 (2026-08-07)
 
 ### Fix

@@ -27,6 +27,7 @@ from .bump import (
     run_bump,
 )
 from .config import CommandConfig, Config, GitConfig
+from .editor import EntryEditor
 from .errors import VommitError
 from .git import GitRepo
 from .shell import CommandResult, Runner, shell
@@ -126,6 +127,7 @@ def run_release(
     notify: Notify = lambda _: None,
     today: dt.date | None = None,
     confirm: Confirm = always,
+    edit: EntryEditor | None = None,
     confirm_version: ConfirmVersion = _yes,
     confirm_stale: ConfirmStale = _yes,
     authenticate: Authenticate = require_token,
@@ -170,7 +172,11 @@ def run_release(
     bumped = None
     if request.no_bump:
         if git:
-            repo.ensure_up_to_date(git, repo.ensure_branch(git, notify), notify)
+            repo.ensure_up_to_date(
+                git,
+                repo.ensure_branch(git, notify, request.bump.allow_branch),
+                notify,
+            )
         version = _current_version(project)
     else:
         bumped = run_bump(
@@ -181,6 +187,7 @@ def run_release(
             notify=notify,
             today=today,
             confirm=confirm,
+            edit=edit,
         )
         if bumped is None:
             # run_bump has already checked the branch and the remote by now

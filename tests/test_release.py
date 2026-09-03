@@ -60,6 +60,7 @@ def release(
     confirm_version=None,
     confirm_stale=None,
     authenticate=None,
+    editor=None,
     **bump_kwargs,
 ):
     return run_release(
@@ -73,6 +74,7 @@ def release(
         **({"confirm": confirm} if confirm else {}),
         **({"confirm_version": confirm_version} if confirm_version else {}),
         **({"confirm_stale": confirm_stale} if confirm_stale else {}),
+        **({"edit": editor} if editor else {}),
     )
 
 
@@ -92,6 +94,26 @@ def test_no_bump_rejects_a_level(sandbox: Sandbox):
 def test_no_bump_rejects_an_explicit_version(sandbox: Sandbox):
     with pytest.raises(VommitError, match="drop --version"):
         release(sandbox, no_bump=True, version="2.0.0")
+
+
+def test_no_bump_rejects_editing(sandbox: Sandbox):
+    # there is no entry being written, so there is nothing to write by hand
+    with pytest.raises(VommitError, match="drop --edit"):
+        release(sandbox, no_bump=True, edit=True)
+
+
+def test_the_hand_written_entry_is_the_one_released(sandbox: Sandbox):
+    with_pipeline(sandbox)
+    with_pypi(sandbox)
+    sandbox.commits("feat: something new")
+    entry = "## v0.2.0 (2023-04-10)\n\n### Feature\n* said properly"
+
+    result = release(sandbox, edit=True, editor=lambda _: entry)
+
+    assert result.version == "0.2.0"
+    assert entry in (sandbox.work / "CHANGELOG.md").read_text()
+    # committed as part of the release, not left behind in the working tree
+    assert entry in sandbox.git("show", "HEAD:CHANGELOG.md").out
 
 
 def test_no_bump_rejects_prerelease(sandbox: Sandbox):

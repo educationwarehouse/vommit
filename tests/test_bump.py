@@ -11,7 +11,7 @@ from .conftest import Sandbox
 TODAY = dt.date(2023, 4, 10)
 
 
-def bump(sandbox: Sandbox, notify=None, confirm=None, **kwargs):
+def bump(sandbox: Sandbox, notify=None, confirm=None, editor=None, **kwargs):
     return run_bump(
         config=Config.from_pyproject(sandbox.work),
         runner=LocalRunner(),
@@ -20,6 +20,7 @@ def bump(sandbox: Sandbox, notify=None, confirm=None, **kwargs):
         notify=notify or (lambda _: None),
         today=TODAY,
         **({"confirm": confirm} if confirm else {}),
+        **({"edit": editor} if editor else {}),
     )
 
 
@@ -367,6 +368,19 @@ def test_wrong_branch_stops_before_anything_is_written(sandbox):
     assert version_of(sandbox) == "0.1.0"
 
 
+def test_allow_branch_bumps_from_a_feature_branch(sandbox):
+    sandbox.git("checkout", "-b", "feature/x")
+    sandbox.commits("feat: something new")
+    messages: list[str] = []
+
+    result = bump(sandbox, notify=messages.append, allow_branch=True)
+
+    assert result.version == "0.2.0"
+    assert "expected 'main'" in messages[0]
+    # the freshness check follows the branch we stayed on, not the configured one
+    assert "No upstream branch 'origin/feature/x'" in messages[1]
+
+
 def test_being_behind_upstream_stops_the_bump(sandbox):
     sandbox.commits("feat: something new")
     sandbox.push_upstream("feat: upstream work")
@@ -572,3 +586,124 @@ def test_noop_never_asks(sandbox):
         raise AssertionError("a dry run has nothing to confirm")
 
     assert bump(sandbox, noop=True, confirm=refuse).noop is True
+
+
+HANDWRITTEN = "## v0.2.0 (2023-04-10)\n\n### Features\n* something worth saying"
+
+
+def test_edit_writes_the_entry_the_user_wrote(sandbox):
+    sandbox.commits("feat: something new")
+    seen: list[str] = []
+
+    def editor(entry: str) -> str:
+        seen.append(entry)
+        return HANDWRITTEN
+
+    result = bump(sandbox, edit=True, editor=editor)
+
+    # the generated entry is what the editor opens on
+    assert seen == ["## v0.2.0 (2023-04-10)\n\n### Feature\n* something new"]
+    assert result.entry == HANDWRITTEN
+    assert HANDWRITTEN in changelog_of(sandbox)
+    # and it lands in the release commit, like the generated one would have
+    assert sandbox.status() == []
+    assert version_of(sandbox) == "0.2.0"
+
+
+def test_editing_from_the_confirmation_re_asks(sandbox):
+    sandbox.commits("feat: something new")
+    answers = ["edit", "yes"]
+    asked: list[str | None] = []
+
+    def confirm(result):
+        asked.append(result.entry)
+        return answers.pop(0)
+
+    bump(sandbox, confirm=confirm, editor=lambda _: HANDWRITTEN)
+
+    # asked twice: once about the generated entry, then about the written one
+    assert asked == [
+        "## v0.2.0 (2023-04-10)\n\n### Feature\n* something new",
+        HANDWRITTEN,
+    ]
+    assert HANDWRITTEN in changelog_of(sandbox)
+
+
+def test_a_declined_bump_after_editing_writes_nothing(sandbox):
+    sandbox.commits("feat: something new")
+    answers = ["edit", "no"]
+
+    result = bump(
+        sandbox,
+        confirm=lambda _: answers.pop(0),
+        editor=lambda _: HANDWRITTEN,
+    )
+
+    assert result.cancelled is True
+    assert result.entry == HANDWRITTEN
+    assert not (sandbox.work / "CHANGELOG.md").exists()
+    assert version_of(sandbox) == "0.1.0"
+
+
+def test_an_editor_that_refuses_leaves_the_project_alone(sandbox):
+    sandbox.commits("feat: something new")
+
+    def editor(_: str) -> str:
+        raise VommitError("The changelog entry was left empty; nothing was written.")
+
+    with pytest.raises(VommitError, match="left empty"):
+        bump(sandbox, edit=True, editor=editor)
+
+    assert version_of(sandbox) == "0.1.0"
+    assert not (sandbox.work / "CHANGELOG.md").exists()
+    assert sandbox.tags() == []
+
+
+def test_edit_contradicts_no_changelog(sandbox):
+    with pytest.raises(VommitError, match="drop --no-changelog"):
+        BumpRequest(edit=True, no_changelog=True)
+
+
+def test_edit_cannot_be_combined_with_undo(sandbox):
+    with pytest.raises(VommitError, match="drop --edit"):
+        BumpRequest(edit=True, undo=True)
+
+
+def test_a_dry_run_is_not_edited(sandbox):
+    sandbox.commits("feat: something new")
+    said: list[str] = []
+
+    def editor(_: str):  # pragma: no cover - must not be reached
+        raise AssertionError("a dry run has nothing to write")
+
+    result = bump(sandbox, edit=True, noop=True, editor=editor, notify=said.append)
+
+    assert "not opened for editing" in " ".join(said)
+    assert result.entry and "something new" in result.entry
+
+
+def test_editing_a_prerelease_without_an_entry_says_so(sandbox):
+    sandbox.commits("feat: something new")
+
+    def editor(_: str):  # pragma: no cover - must not be reached
+        raise AssertionError("there is no entry to edit")
+
+    said: list[str] = []
+    result = bump(
+        sandbox, edit=True, prerelease=True, editor=editor, notify=said.append
+    )
+
+    assert result.entry is None
+    assert any("no changelog entry" in message for message in said)
+
+
+def test_editing_without_an_editor_to_edit_with(sandbox):
+    sandbox.commits("feat: something new")
+
+    # a library caller asking for --edit and wiring nothing to edit with; the
+    # CLI always passes one, so this is the mistake being named rather than a
+    # NoneType that is not callable
+    with pytest.raises(VommitError, match="No editor was provided"):
+        bump(sandbox, edit=True)
+
+    assert version_of(sandbox) == "0.1.0"

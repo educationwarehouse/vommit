@@ -6,6 +6,7 @@ from pathlib import Path
 from .changelog import Changelog, ChangelogUpdate
 from .commits import VersionBump, highest_version_bump
 from .config import Config
+from .editor import EntryEditor
 from .errors import VommitError
 from .git import GitRepo, resolve_author
 from .helpers import relative_path
@@ -13,7 +14,12 @@ from .shell import Runner
 from .versioning import is_prerelease, plan_bump, version_source
 
 Notify = t.Callable[[str], None]
-Confirm = t.Callable[["BumpResult"], bool]
+
+#: What the confirmation step can answer. `edit` reopens the changelog entry and
+#: asks again; bool is still accepted, so callers with nothing to edit (and the
+#: `always` default) need not know about the third option.
+BumpAnswer = t.Literal["yes", "edit", "no"]
+Confirm = t.Callable[["BumpResult"], "bool | BumpAnswer"]
 
 PYPROJECT = "pyproject.toml"
 LOCKFILE = "uv.lock"
@@ -41,10 +47,14 @@ class BumpRequest:
     prerelease: bool = False
     noop: bool = False
     allow_dirty: bool = False
+    allow_branch: bool = False
     no_changelog: bool = False
+    edit: bool = False
     undo: bool = False
 
     def __post_init__(self) -> None:
+        if self.edit and self.no_changelog:
+            raise VommitError("--edit opens the changelog entry; drop --no-changelog.")
         if self.undo:
             self._reject_alongside_undo()
             return
@@ -66,7 +76,8 @@ class BumpRequest:
 
         Anything that takes the version as given instead of choosing one
         (`--undo`, `--no-bump`) has the same set to reject, so the set is
-        written once here rather than once per caller.
+        written once here rather than once per caller. `--edit` belongs to it
+        for the same reason: there is no entry being written to edit.
         """
         return [
             f"--{name}"
@@ -76,6 +87,7 @@ class BumpRequest:
                 ("patch", self.level == "patch"),
                 ("prerelease", self.prerelease),
                 ("version", bool(self.version)),
+                ("edit", self.edit),
                 ("allow-dirty", include_dirty and self.allow_dirty),
             )
             if given
@@ -131,6 +143,7 @@ def run_bump(
     notify: Notify = lambda _: None,
     today: dt.date | None = None,
     confirm: Confirm = always,
+    edit: EntryEditor | None = None,
 ) -> BumpResult | None:
     """
     Bump the version, update the changelog, commit and tag.
@@ -147,7 +160,7 @@ def run_bump(
     project = version_source(runner, root)
 
     if git:
-        branch = repo.ensure_branch(git, notify)
+        branch = repo.ensure_branch(git, notify, request.allow_branch)
         repo.ensure_up_to_date(git, branch, notify)
 
     # reading history is how the bump level is found at all, so it happens even
@@ -236,8 +249,23 @@ def run_bump(
         prerelease=prerelease,
     )
     if request.noop:
+        # a dry run prints the entry it would write; opening an editor on a
+        # release that is not happening would be asking for prose to throw away
+        if request.edit:
+            notify("--noop: the changelog entry below is not opened for editing.")
         return result
-    if not confirm(result):
+
+    # after the checks above, for the same reason the release resolves its token
+    # late: nobody should write release notes for a bump that is about to be
+    # refused over a dirty tree or a tag that is already taken.
+    if request.edit:
+        update = _edited(changelog, update, edit, notify)
+        result = dc.replace(result, entry=update.entry if update else None)
+
+    while (answer := _answer(confirm(result))) == "edit":
+        update = _edited(changelog, update, edit, notify)
+        result = dc.replace(result, entry=update.entry if update else None)
+    if answer == "no":
         return dc.replace(result, noop=True, cancelled=True)
 
     lockfile_ignored = bool(git and repo.ignores(project.lockfile_name))
@@ -267,6 +295,38 @@ def run_bump(
             repo.tag(tag)
 
     return result
+
+
+def _answer(value: bool | BumpAnswer) -> BumpAnswer:
+    """
+    A confirmation, as one of three answers rather than two or three.
+    """
+    if value is True:
+        return "yes"
+    elif value is False:
+        return "no"
+    else:
+        return value
+
+
+def _edited(
+    changelog: Changelog | None,
+    update: ChangelogUpdate | None,
+    edit: EntryEditor | None,
+    notify: Notify,
+) -> ChangelogUpdate | None:
+    """
+    The pending changelog write, as the user rewrote it.
+
+    Nothing to edit is not an error: a prerelease whose changes stay unlisted
+    has already said so, and the bump itself is still worth going through with.
+    """
+    if changelog is None or update is None:
+        notify("There is no changelog entry for this bump to edit.")
+        return update
+    if edit is None:
+        raise VommitError("No editor was provided to edit the changelog entry with.")
+    return changelog.replan(update, edit(update.entry))
 
 
 def _commit(

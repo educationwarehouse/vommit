@@ -95,6 +95,32 @@ def test_ensure_branch_can_warn_instead(sandbox):
     assert "expected 'main'" in messages[0]
 
 
+def test_allow_branch_overrides_a_configured_error(sandbox):
+    sandbox.git("checkout", "-b", "feature/x")
+    messages: list[str] = []
+
+    branch = repo_of(sandbox).ensure_branch(
+        GitConfig.load({"branch": "main"}), messages.append, allow_branch=True
+    )
+
+    assert branch == "feature/x"
+    assert "expected 'main'" in messages[0]
+
+
+def test_allow_branch_does_not_switch(sandbox):
+    """`switch` moves the checkout; being told to accept this branch must not."""
+    sandbox.git("checkout", "-b", "feature/x")
+
+    branch = repo_of(sandbox).ensure_branch(
+        GitConfig.load({"branch": "main", "on_wrong_branch": "switch"}),
+        print,
+        allow_branch=True,
+    )
+
+    assert branch == "feature/x"
+    assert repo_of(sandbox).current_branch() == "feature/x"
+
+
 def test_ensure_branch_can_switch(sandbox):
     sandbox.git("checkout", "-b", "feature/x")
     messages: list[str] = []
