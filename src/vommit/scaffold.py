@@ -28,6 +28,7 @@ Configure = t.Callable[[Path, str], None]
 
 PYPROJECT = "pyproject.toml"
 GITIGNORE = ".gitignore"
+UV_LOCK = "uv.lock"
 LICENSE_FILE = "LICENSE"
 ORIGIN = "origin"
 DEFAULT_BRANCH = "main"
@@ -379,6 +380,26 @@ def ensure_gitignore(root: Path, venv: str | None = None) -> list[str]:
         separator = "" if existing.endswith("\n") else "\n"
         path.write_text(existing + separator + "\n".join(missing) + "\n")
     return missing
+
+
+def ensure_uv_lock_ignored(root: Path) -> bool:
+    """
+    Add uv.lock to an existing .gitignore without creating one.
+
+    Setup is not responsible for choosing a project's general ignore policy,
+    but its lockfile is a release artifact Vommit deliberately leaves alone.
+    """
+    path = root / GITIGNORE
+    if not path.exists():
+        return False
+
+    existing = path.read_text()
+    if UV_LOCK in existing.splitlines():
+        return False
+
+    separator = "" if existing.endswith("\n") else "\n"
+    path.write_text(existing + separator + UV_LOCK + "\n")
+    return True
 
 
 def run_scaffold(

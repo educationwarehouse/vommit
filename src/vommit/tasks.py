@@ -64,6 +64,7 @@ from .scaffold import (
     Defaults,
     ScaffoldRequest,
     ScaffoldResult,
+    ensure_uv_lock_ignored,
     initial_commit_message,
     plan_request,
     run_scaffold,
@@ -440,6 +441,8 @@ def setup(
                 config = Config.interactive(config, present_paths=present_paths)
 
         _write_config(c, config, root, pyproject, branch)
+        if ensure_uv_lock_ignored(root):
+            rich.print("[blue]Added uv.lock to .gitignore.[/blue]")
         # a crate-backed project keeps `dynamic = ["version"]` on purpose, so the
         # offer below, which exists to make [project].version bumpable, has
         # nothing to fix and would report the deliberate shape as a problem
