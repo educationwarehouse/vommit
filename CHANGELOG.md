@@ -2,6 +2,11 @@
 
 <!-- next-version-placeholder -->
 
+## v0.6.2 (2026-09-04)
+
+### Fix
+* **setup:** ignore uv.lock in scaffolded projects
+
 ## v0.6.1 (2026-09-03)
 
 ### Fix
