@@ -3,9 +3,9 @@ Whether this project's build configuration will produce the release we intend.
 
 Two kinds of question, reported together:
 
-- *will the configured command build this project at all* -- the module uv_build
+- *will the configured command build this project at all*: the module uv_build
   looks for, the maturin target it would silently narrow to;
-- *is the project on the build backend vommit releases with* -- Hatchling
+- *is the project on the build backend vommit releases with*: Hatchling
   instead of uv_build, or a uv_build pin outside the range vommit is tested
   against.
 
@@ -18,8 +18,8 @@ nothing, and again (report-only) at the head of a release.
 They warn rather than refuse. The build command is a shell string and the ways
 to make one work are open-ended; the only thing worth saying with confidence is
 that a specific, verified misconfiguration is present. Each warning carries a
-stable id, which is what a project puts in `ignore` to stop hearing it, and --
-where the change is mechanical and cannot lose information -- a `fix` that
+stable id, which is what a project puts in `ignore` to stop hearing it, and,
+where the change is mechanical and cannot lose information, a `fix` that
 writes it.
 """
 
@@ -32,6 +32,7 @@ from packaging.specifiers import SpecifierSet
 from packaging.utils import canonicalize_name
 
 from .config import Config
+from .errors import VommitError
 from .helpers import read_toml
 from .migrate import normalise_name, project_name
 
@@ -59,6 +60,61 @@ RECOMMENDED_UV_BUILD_REQUIREMENT = (
 #: throw away whatever it does besides building.
 HATCH_BUILD_COMMANDS = {"hatch build", "hatch build -c", "hatch build --clean"}
 HATCH_PUBLISH_COMMANDS = {"hatch publish"}
+
+#: Every id a warning here can carry. What `ignore` silences and what `setup
+#: --fix` names; kept in one place so both can say which ids exist rather than
+#: accepting a typo as a request nothing matches.
+WARNING_IDS = frozenset(
+    (
+        "hatchling-backend",
+        "uv-build-pin",
+        "hatch-build-command",
+        "maturin-uv-build",
+        "uv-build-module-missing",
+    )
+)
+
+#: The subset carrying a `fix`, where the project's shape allows it. The other
+#: ids describe something with no mechanical answer, so `--fix` cannot promise
+#: them anything.
+FIXABLE_WARNING_IDS = frozenset(
+    ("hatchling-backend", "uv-build-pin", "hatch-build-command")
+)
+
+#: `--fix` shorthand for every id in `FIXABLE_WARNING_IDS`.
+FIX_ALL = "all"
+
+
+def requested_fixes(fix: str | None) -> set[str]:
+    """
+    The warning ids a `--fix` flag asked for, refusing anything that is not one.
+
+    A typo is an error rather than a silent no-op: the flag exists so that an
+    unattended run changes something, and a run that changed nothing because of
+    a misspelling looks exactly like a project with nothing to fix. An id that
+    is real but carries no fix is refused for the same reason.
+    """
+    if fix is None:
+        return set()
+
+    asked = {part.strip() for part in fix.split(",") if part.strip()}
+    if not asked:
+        raise VommitError(f"--fix needs a warning id, or '{FIX_ALL}'.")
+    if FIX_ALL in asked:
+        return set(FIXABLE_WARNING_IDS)
+
+    if unknown := sorted(asked - WARNING_IDS):
+        raise VommitError(
+            f"Not a build warning: {', '.join(unknown)}. "
+            f"Fixable ids are {', '.join(sorted(FIXABLE_WARNING_IDS))}."
+        )
+    if unfixable := sorted(asked - FIXABLE_WARNING_IDS):
+        raise VommitError(
+            f"No fix to apply for {', '.join(unfixable)}: the warning names what "
+            "is in the way instead of offering a change. "
+            f"Fixable ids are {', '.join(sorted(FIXABLE_WARNING_IDS))}."
+        )
+    return asked
 
 
 @dc.dataclass(frozen=True)
@@ -178,8 +234,8 @@ def _hatchling_warning(
     Hatchling instead of uv_build, with an offer to swap when nothing is lost.
 
     The swap is two keys, but only for a project whose artifact is described by
-    nothing but those keys. Anything Hatchling-specific -- a build target, a
-    dynamic version, an extra build requirement -- has no uv_build equivalent to
+    nothing but those keys. Anything Hatchling-specific (a build target, a
+    dynamic version, an extra build requirement) has no uv_build equivalent to
     translate into, so the blockers are named instead of guessed at.
     """
     warning_id = "hatchling-backend"
