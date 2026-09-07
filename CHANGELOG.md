@@ -2,6 +2,11 @@
 
 <!-- next-version-placeholder -->
 
+## v0.7.0 (2026-09-07)
+
+### Feature
+* **build:** add explicit fixes for build warnings
+
 ## v0.6.2 (2026-09-04)
 
 ### Fix
