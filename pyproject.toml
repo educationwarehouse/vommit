@@ -5,6 +5,10 @@ build-backend = "uv_build"
 [project]
 name = "vommit"
 version = "0.6.2"
+# `uvenv install --editable` (3.11.0) refuses to install any local package
+# with zero classifiers at all ("missing field `classifier`"), so this stays
+# non-empty even though PyPI itself does not require it.
+classifiers = ["Programming Language :: Python :: 3"]
 description = "Vommit Oversees Making & Managing Installable Things"
 readme = "README.md"
 authors = [
