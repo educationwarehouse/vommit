@@ -1,3 +1,10 @@
+import time
+
+import invoke
+import pytest
+from invoke.exceptions import ThreadException
+from invoke.util import ExceptionWrapper
+
 from src.vommit.shell import CommandResult, ContextRunner, LocalRunner, bash, shell
 
 
@@ -44,6 +51,42 @@ def test_local_runner_captures_the_exit_code():
     assert failed.returncode != 0
 
 
+def test_local_runner_closes_stdin_instead_of_inheriting_it():
+    """
+    Regression: stdin used to inherit the caller's, so a configured command
+    that turned out to need a live terminal (a plain confirmation prompt,
+    say) blocked on it forever rather than failing, and hidden behind a
+    captured runner, blocked invisibly, with nothing on screen explaining
+    why. `cat` with no input is exactly that shape: it blocks until stdin
+    closes, so this hangs the whole test suite instead of asserting anything
+    on a version of this method that inherits stdin.
+    """
+    result = LocalRunner().run("cat")
+    assert result.ok is True
+    assert result.stdout == ""
+
+
+def test_local_runner_kills_a_command_asking_for_interactive_auth():
+    """
+    Regression: closing stdin (above) stops a plain "press enter" prompt from
+    blocking forever, but not this shape of prompt, which is not blocked on
+    stdin at all: it is polling a remote server for a browser click to have
+    happened. `printf` stands in for a real publish command that prints
+    an auth prompt then would otherwise sit forever (`sleep 30`, here) doing
+    that polling; if the pattern is not caught, this test takes 30 seconds
+    and still passes, so the wall-clock time is the real assertion.
+    """
+    start = time.monotonic()
+    result = LocalRunner().run(
+        shell("printf 'Authenticate your account at https://example.com\\n'; sleep 30")
+    )
+    elapsed = time.monotonic() - start
+
+    assert elapsed < 5, f"took {elapsed:.1f}s, the sleep was not interrupted"
+    assert result.ok is False
+    assert "interactive authentication" in result.stderr
+
+
 def test_local_runner_respects_shell_quoting():
     result = LocalRunner().run("git -c user.name='two words' config user.name")
     assert result.out == "two words"
@@ -83,12 +126,16 @@ def test_context_runner_adapts_an_invoke_result():
     result = ContextRunner(context).run("git status")
 
     assert result == CommandResult("git status", 1, "out", "err")
-    assert context.kwargs == {
+    kwargs = dict(context.kwargs)
+    watchers = kwargs.pop("watchers")
+    assert kwargs == {
         "command": "git status",
         "hide": True,
         "warn": True,
+        "in_stream": False,
         "env": {},
     }
+    assert len(watchers) == 1
 
 
 def test_context_runner_passes_env_through():
@@ -98,3 +145,55 @@ def test_context_runner_passes_env_through():
 
     assert context.kwargs["env"] == {"TOKEN": "secret"}
     assert "secret" not in repr(result)
+
+
+def test_context_runner_kills_a_command_asking_for_interactive_auth():
+    """
+    The real `invoke.Context`, not `FakeContext`: `FakeContext` never runs a
+    subprocess at all, so it cannot exercise the actual mechanism this relies
+    on (an `invoke` watcher raising inside a background thread, `invoke`
+    wrapping that in a `ThreadException`, and this method unwrapping it back
+    out again) the way `test_local_runner_kills_...` exercises `LocalRunner`'s
+    own version of the same guarantee.
+
+    Prints ordinary output before the prompt, the way `bun publish` prints a
+    packed-file summary before ever asking for authentication: the watcher
+    has to see (and pass over) that harmless first line without raising,
+    which a command that goes straight to the prompt would not exercise.
+    """
+    context = invoke.Context()
+    start = time.monotonic()
+    result = ContextRunner(context).run(
+        shell(
+            "printf 'packed 133B package.json\\n'; sleep 0.2; "
+            "printf 'Authenticate your account at https://example.com\\n'; "
+            "sleep 30"
+        )
+    )
+    elapsed = time.monotonic() - start
+
+    assert elapsed < 5, f"took {elapsed:.1f}s, the sleep was not interrupted"
+    assert result.ok is False
+    assert "interactive authentication" in result.stderr
+
+
+def test_context_runner_reraises_an_unrelated_thread_exception():
+    """
+    Only the specific exception `_AuthPromptWatcher` raises is meant to be
+    caught and turned into a failed `CommandResult`; anything else a watcher
+    (or `invoke` itself) raises in a background thread is a real bug and
+    must not be swallowed the same way.
+    """
+
+    class ExplodingContext(FakeContext):
+        def run(self, command, **kwargs):
+            wrapped = ExceptionWrapper(
+                kwargs={},
+                type=RuntimeError,
+                value=RuntimeError("not an auth prompt"),
+                traceback=None,
+            )
+            raise ThreadException([wrapped])
+
+    with pytest.raises(ThreadException):
+        ContextRunner(ExplodingContext(FakeInvokeResult(0, "", ""))).run("echo hi")
