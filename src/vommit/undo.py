@@ -42,9 +42,12 @@ class UndoPlan:
     def paths(self) -> tuple[str, ...]:
         if self.rewinds_history:
             return ()
-        changelog = (str(self.changelog_path),) if self.changelog_path else ()
-        lockfile = (self.lockfile,) if self.lockfile else ()
-        return (self.manifest, *lockfile, *changelog)
+        written = (
+            self.manifest,
+            self.lockfile,
+            str(self.changelog_path) if self.changelog_path else None,
+        )
+        return tuple(path for path in written if path)
 
 
 @dc.dataclass(frozen=True)

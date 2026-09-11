@@ -179,7 +179,7 @@ def test_context_runner_kills_a_command_asking_for_interactive_auth():
 
 def test_context_runner_reraises_an_unrelated_thread_exception():
     """
-    Only the specific exception `_AuthPromptWatcher` raises is meant to be
+    Only the specific exception `AuthPromptWatcher` raises is meant to be
     caught and turned into a failed `CommandResult`; anything else a watcher
     (or `invoke` itself) raises in a background thread is a real bug and
     must not be swallowed the same way.

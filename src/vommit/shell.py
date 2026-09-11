@@ -54,25 +54,19 @@ class Runner(t.Protocol):
     ) -> CommandResult: ...  # pragma: no cover
 
 
-#: Substrings seen in the wild that mean "this process is now waiting on a
-#: browser click or a one-time password nobody here can provide", so far only
-#: from npm/bun's own publish flow. Neither is blocked on stdin (closing it,
-#: below, stops a plain "press enter" prompt but not a poll against npm's own
-#: servers for that browser click to have happened), so the only way to catch
-#: either is to watch for their own wording as it is produced and abort right
-#: there. Add to this tuple as other tools' equivalents turn up, rather than
-#: try to catch the general shape some other way.
+# Wording that means the process is waiting on a browser click or a one-time
+# password nobody here can provide. Neither is blocked on stdin, so closing it
+# does not help; watching the output is the only way to catch them. Add to
+# this tuple as other tools' equivalents turn up.
 AUTH_PROMPT_PATTERNS: tuple[str, ...] = (
     "Authenticate your account at",
     "Enter one-time password",
     "one-time password:",
 )
 
-#: How many recently produced bytes to match `AUTH_PROMPT_PATTERNS` against.
-#: Comfortably longer than the longest pattern, which is all it has to be: the
-#: patterns are matched as output arrives, so anything older than the last few
-#: dozen bytes has already had its chance to match.
-_MATCH_WINDOW = 256
+# How many recent bytes to match the patterns against, so one arriving in two
+# reads is still seen.
+MATCH_WINDOW = 256
 
 AUTH_PROMPT_MESSAGE = (
     "Aborted: this command is waiting on interactive authentication (a "
@@ -80,38 +74,33 @@ AUTH_PROMPT_MESSAGE = (
 )
 
 
-def _decode(raw: bytes) -> str:
+def decode(raw: bytes) -> str:
     """
-    Captured output as text, never refusing it.
-
-    Output is read to be matched against `AUTH_PROMPT_PATTERNS` and shown back
-    in an error message, so a byte that is not valid UTF-8 -- a commit subject
-    in some other encoding is the one that turns up -- should cost that one
-    character, not the whole result.
+    Captured output as text, never refusing it: output is only matched and
+    shown back in errors, so one undecodable byte should not cost the rest.
     """
     return raw.decode("utf-8", errors="replace")
 
 
-def _contains_auth_prompt(text: str) -> bool:
+def contains_auth_prompt(text: str) -> bool:
     return any(pattern in text for pattern in AUTH_PROMPT_PATTERNS)
 
 
-class _AuthPromptSeen(Exception):
+class AuthPromptSeen(Exception):
     """
-    Raised by `_AuthPromptWatcher` to make `invoke` kill the subprocess the
-    moment `AUTH_PROMPT_PATTERNS` appears in its output, rather than leave it
-    to hang (or, at best, eventually time out on its own).
+    Raised by `AuthPromptWatcher` to make invoke kill the subprocess rather
+    than let it hang on a prompt nothing here can answer.
     """
 
 
-class _AuthPromptWatcher(StreamWatcher):
+class AuthPromptWatcher(StreamWatcher):
     def __init__(self) -> None:
         self._raised = False
 
     def submit(self, stream: str) -> t.Iterable[str]:
-        if not self._raised and _contains_auth_prompt(stream):
+        if not self._raised and contains_auth_prompt(stream):
             self._raised = True
-            raise _AuthPromptSeen(AUTH_PROMPT_MESSAGE)
+            raise AuthPromptSeen(AUTH_PROMPT_MESSAGE)
         return []
 
 
@@ -119,23 +108,14 @@ class LocalRunner:
     """
     Runs commands directly via subprocess, without a shell.
 
-    Every command run through here (`git`, `uv version`, a configured
-    build/publish command) is meant to run unattended, so anything that turns
-    out to need a human after all should fail immediately and visibly rather
-    than block forever on an action nobody here can see was ever asked for.
-    Two different blocking shapes need two different answers:
+    Everything here runs unattended, so two blocking shapes need answering.
+    Closing stdin (`DEVNULL`) gives a plain confirmation prompt immediate EOF
+    instead of a terminal to wait on. An auth prompt is not blocked on stdin
+    at all, though, so `Capture` watches the output and kills the process
+    when one appears.
 
-    - stdin is closed (`DEVNULL`) rather than inherited, so a prompt that is
-      genuinely waiting on a keypress (a plain confirmation, say) gets
-      immediate EOF instead of a real terminal to (maybe) block on;
-    - output is read incrementally rather than only once the process exits,
-      specifically so `AUTH_PROMPT_PATTERNS` can be caught and the process
-      killed the moment one appears, because that shape of prompt is not
-      blocked on stdin at all: it is polling a remote server for a browser
-      click to have happened, and closing stdin does not stop that.
-
-    A command that genuinely needs a terminal, like opening an editor, is
-    deliberately never run through `Runner` at all; see `editor.py`.
+    A command that genuinely needs a terminal, like an editor, is never run
+    through `Runner`; see `editor.py`.
     """
 
     def run(
@@ -150,46 +130,12 @@ class LocalRunner:
             stdin=subprocess.DEVNULL,
             env={**os.environ, **env} if env else None,
         )
-
-        stdout_chunks: list[bytes] = []
-        stderr_chunks: list[bytes] = []
-        aborted = threading.Event()
-
-        def _drain(stream: t.IO[bytes], chunks: list[bytes]) -> None:
-            # `os.read` rather than `readline`, because an auth prompt is
-            # written *without* a trailing newline (the cursor has to stay on
-            # the line it is asking on): a line-based read would block until a
-            # newline the process is never going to send, which is exactly the
-            # hang this is here to prevent. It returns whatever has arrived
-            # instead of waiting for a full buffer, so the prompt is seen as
-            # soon as it is written. `recent` carries enough context for a
-            # pattern that straddles two reads.
-            recent = b""
-            while chunk := os.read(stream.fileno(), 8192):
-                chunks.append(chunk)
-                if aborted.is_set():
-                    continue
-                recent = (recent + chunk)[-_MATCH_WINDOW:]
-                if _contains_auth_prompt(_decode(recent)):
-                    aborted.set()
-                    process.kill()
-            stream.close()
-
         assert process.stdout is not None  # PIPE above guarantees this
         assert process.stderr is not None  # same
-        readers = [
-            threading.Thread(target=_drain, args=(process.stdout, stdout_chunks)),
-            threading.Thread(target=_drain, args=(process.stderr, stderr_chunks)),
-        ]
-        for reader in readers:
-            reader.start()
-        process.wait()
-        for reader in readers:
-            reader.join()
 
-        stdout = _decode(b"".join(stdout_chunks))
-        stderr = _decode(b"".join(stderr_chunks))
-        if aborted.is_set():
+        capture = Capture(process)
+        stdout, stderr = capture.run(process.stdout, process.stderr)
+        if capture.aborted:
             stderr = (
                 f"{stderr}\n{AUTH_PROMPT_MESSAGE}" if stderr else AUTH_PROMPT_MESSAGE
             )
@@ -201,16 +147,60 @@ class LocalRunner:
         )
 
 
+class Capture:
+    """
+    Reads both pipes of a running process, killing it if an auth prompt shows
+    up in either.
+
+    One thread per pipe, because a single one would block on whichever stream
+    the process writes to second. `os.read` rather than `readline`, because a
+    prompt has no trailing newline to wait for: the cursor has to stay on the
+    line it is asking on, so reading by line would hang on exactly the case
+    this exists to catch.
+    """
+
+    def __init__(self, process: subprocess.Popen[bytes]) -> None:
+        self._process = process
+        self.aborted = False
+
+    def run(self, stdout: t.IO[bytes], stderr: t.IO[bytes]) -> tuple[str, str]:
+        captured: dict[t.IO[bytes], list[bytes]] = {stdout: [], stderr: []}
+        readers = [
+            threading.Thread(target=self._drain, args=(stream, chunks))
+            for stream, chunks in captured.items()
+        ]
+        for reader in readers:
+            reader.start()
+        self._process.wait()
+        for reader in readers:
+            reader.join()
+        return (
+            decode(b"".join(captured[stdout])),
+            decode(b"".join(captured[stderr])),
+        )
+
+    def _drain(self, stream: t.IO[bytes], chunks: list[bytes]) -> None:
+        recent = b""
+        while chunk := os.read(stream.fileno(), 8192):
+            chunks.append(chunk)
+            if self.aborted:
+                continue
+            # a window rather than the chunk, so a pattern arriving in two
+            # reads is still seen
+            recent = (recent + chunk)[-MATCH_WINDOW:]
+            if contains_auth_prompt(decode(recent)):
+                self.aborted = True
+                self._process.kill()
+        stream.close()
+
+
 class ContextRunner:
     """
     Adapts an ewok/invoke Context, so tasks reuse the CLI's own runner config.
 
-    Gives the same guarantee `LocalRunner` does, using `invoke`'s own
-    mechanisms instead of reimplementing them: `in_stream=False` closes the
-    child's stdin (a plain "press enter" prompt gets immediate EOF rather
-    than a real terminal), and `_AuthPromptWatcher` aborts the command the
-    moment `AUTH_PROMPT_PATTERNS` appears in its output (the shape of prompt
-    that is not blocked on stdin at all, so closing it does nothing).
+    Same guarantee as `LocalRunner`, through invoke's own mechanisms:
+    `in_stream=False` closes the child's stdin, and `AuthPromptWatcher`
+    aborts on a prompt that closing stdin would not stop.
     """
 
     def __init__(self, ctx: Context) -> None:
@@ -229,12 +219,12 @@ class ContextRunner:
                 hide=True,
                 warn=True,
                 in_stream=False,
-                watchers=[_AuthPromptWatcher()],
+                watchers=[AuthPromptWatcher()],
                 env=env or {},
             )
         except ThreadException as error:
             for wrapped in error.exceptions:
-                if isinstance(wrapped.value, _AuthPromptSeen):
+                if isinstance(wrapped.value, AuthPromptSeen):
                     return CommandResult(
                         command=command,
                         returncode=1,

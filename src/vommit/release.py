@@ -176,9 +176,9 @@ def run_release(
     # Gated on the project, not just on `pypi`: an npm publish authenticates
     # through its own `.npmrc`, not a token vommit resolves and injects, so
     # asking for a PyPI one here would ask for a credential the release will
-    # never use. `pypi.enabled` is not enough on its own to tell that -- it
-    # defaults to true, so every npm project configured before vommit knew
-    # what one was still has it set.
+    # never use. `pypi.enabled` cannot tell that on its own: it defaults to
+    # true, so every npm project configured before vommit knew what one was
+    # still has it set.
     publishing = any(step.name == PUBLISH for step in steps)
     needs_pypi_token = bool(pypi) and not isinstance(project, NpmProject)
     token = (

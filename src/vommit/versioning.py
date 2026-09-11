@@ -1,3 +1,4 @@
+import abc
 import dataclasses as dc
 import json
 import shlex
@@ -190,7 +191,7 @@ def plan_bump(
 
 
 @dc.dataclass(frozen=True)
-class VersionSource:
+class VersionSource(abc.ABC):
     """
     The file a project's version lives in, split into a read, a preview and an
     apply.
@@ -209,11 +210,7 @@ class VersionSource:
     #: The file holding the version, relative to `root`.
     manifest_name: t.ClassVar[str]
     #: The lockfile that records it a second time, relative to `root`, or None
-    #: for a backend that does not manage one (see `NpmProject`). Optional
-    #: rather than a filename that is never written: every caller that reaches
-    #: for a lockfile has to handle its absence anyway, and saying so in the
-    #: type is what stops `undo` and `bump` from disagreeing about whether one
-    #: exists.
+    #: for a backend that manages none (see `NpmProject`).
     lockfile_name: t.ClassVar[str | None]
 
     @property
@@ -232,20 +229,23 @@ class VersionSource:
             return None
         return self.version_in(self.manifest.read_text())
 
+    @abc.abstractmethod
     def version_in(self, manifest: str) -> str | None:
         """
         The declared version of any revision of the manifest, including an old one.
         """
-        raise NotImplementedError  # pragma: no cover
 
+    @abc.abstractmethod
     def preview(self, args: list[str]) -> str:
         """
         What `uv version <args>` would produce, without writing anything.
         """
-        raise NotImplementedError  # pragma: no cover
 
+    @abc.abstractmethod
     def apply(self, args: list[str], frozen: bool = False) -> str:
-        raise NotImplementedError  # pragma: no cover
+        """
+        Write what `uv version <args>` produces, and return it.
+        """
 
     def preview_bump(
         self,
@@ -346,26 +346,22 @@ class SemVerProject(VersionSource):
     """
     A project whose manifest holds plain SemVer rather than PEP 440.
 
-    The arithmetic is still uv's, because that is what keeps every backend
-    landing on the same version from the same commits: uv runs against a
-    throwaway `pyproject.toml` holding nothing but the current version, and
-    whatever it computes is converted back with `to_semver` before it is
-    written. Nothing in that is specific to one manifest format, so a subclass
-    supplies only the three things that are: how to read a version out
-    (`version_in`), how to write one back (`_write_version`), and what to say
-    when there is none to read (`missing_version`).
+    The arithmetic stays uv's, so every backend lands on the same version from
+    the same commits: uv runs against a throwaway `pyproject.toml` holding
+    only the current version, and `to_semver` converts the answer back. A
+    subclass supplies just the manifest-specific parts: `version_in`,
+    `_write_version` and `missing_version`.
     """
 
-    #: Where the version lives, for the error when the manifest states none.
-    #: Spelled per-format because `[package].version` and `.version` are the
-    #: same sentence in two languages.
+    #: How this manifest spells the version field, for the error when it
+    #: states none.
     missing_version: t.ClassVar[str]
 
+    @abc.abstractmethod
     def _write_version(self, semver: str) -> None:
         """
         Put `semver` in the manifest, leaving everything else as it was found.
         """
-        raise NotImplementedError  # pragma: no cover
 
     def _after_write(self, frozen: bool) -> None:
         """
@@ -479,11 +475,10 @@ class CargoProject(SemVerProject):
             )
 
 
-NPM = "package.json"
+PACKAGE_JSON = "package.json"
 
-#: How `json.dump` spells the indentation `package.json` was already using,
-#: when the file gives nothing to go on (a one-line manifest, say). npm's own
-#: default, so a file this creates the shape of looks like one npm wrote.
+#: What to indent `package.json` by when the file itself gives nothing to go
+#: on. npm's own default.
 DEFAULT_JSON_INDENT = 2
 
 
@@ -492,19 +487,13 @@ class NpmProject(SemVerProject):
     """
     A project whose version is `.version` in `package.json`.
 
-    npm's version field is plain SemVer, the same target format Cargo needs, so
-    the arithmetic is the shared one in `SemVerProject`: PEP 440 -> SemVer is
-    exactly what npm's version field also requires, and the two ecosystems'
-    prerelease spelling (`-beta.1`) is identical.
-
-    Deliberately does not relock a lockfile: npm, pnpm, yarn and bun each keep
-    a different one (and disagree on shape), and a lockfile a bump left stale
-    is no different from one any other manual edit to `package.json` left
-    stale; the next install fixes it. `lockfile_name` is None so that nothing
-    downstream stages, unstages or relocks a file this class never wrote.
+    No lockfile: npm, pnpm, yarn and bun each keep a different one and
+    disagree on its shape, and the next install fixes a stale one anyway.
+    `lockfile_name` is None so nothing downstream stages or relocks a file
+    this never wrote.
     """
 
-    manifest_name: t.ClassVar[str] = NPM
+    manifest_name: t.ClassVar[str] = PACKAGE_JSON
     lockfile_name: t.ClassVar[str | None] = None
     missing_version: t.ClassVar[str] = ".version"
 
@@ -515,16 +504,12 @@ class NpmProject(SemVerProject):
 
     def unsupported_version(self) -> str | None:
         """
-        The manifest's `.version` when it is a version npm accepts but this
-        cannot bump, and None in every other case (including no version at all).
+        The manifest's `.version` when npm accepts it but this cannot bump it,
+        None otherwise.
 
-        SemVer allows prerelease identifiers PEP 440 has no reading for
-        (`1.0.0-alpha.beta`, `1.0.0-x.7.z.92`), and `version_in` can only answer
-        None for those, which is the same answer it gives for a manifest with no
-        version in it. The two want different messages -- one is "this is not an
-        npm project", the other is "it is, and here is the version in the way"
-        -- so the distinction is drawn here rather than guessed at by the
-        caller.
+        `version_in` answers None both for a prerelease PEP 440 cannot read
+        (`1.0.0-alpha.beta`) and for no version at all, and those two want
+        different messages, so the distinction is drawn here.
         """
         if not self.manifest.exists():
             return None
@@ -544,14 +529,13 @@ class NpmProject(SemVerProject):
         return str(version) if version is not None else None
 
     def _write_version(self, semver: str) -> None:
-        # read as text first: the version is one field, and rewriting the file
-        # in this module's own idea of formatting would put the whole manifest
-        # in the release commit's diff. npm's own `npm version` preserves both
-        # of these for the same reason.
+        # read as text first: only the version field changes, so reformatting
+        # the rest would put the whole manifest in the release commit's diff.
+        # `npm version` preserves the same two things.
         raw = self.manifest.read_text()
         document = json.loads(raw)
         if not isinstance(document, dict):
-            raise VommitError(f"{NPM} must contain a JSON object.")
+            raise VommitError(f"{PACKAGE_JSON} must contain a JSON object.")
         document["version"] = semver
         text = json.dumps(document, indent=_json_indent(raw))
         self.manifest.write_text(text + "\n" if raw.endswith("\n") else text)
@@ -561,10 +545,8 @@ def _json_indent(raw: str) -> int | str:
     """
     The indentation `raw` uses, in the form `json.dumps` takes it.
 
-    Read off the first indented line rather than parsed, because that is the
-    only place the information survives: `json.loads` throws formatting away.
-    Tabs come back as the string `json.dumps` wants for them; a file with
-    nothing indented gets the default rather than a guess.
+    Read off the first indented line, because `json.loads` throws formatting
+    away and this is the only place it survives.
     """
     for line in raw.splitlines()[1:]:
         stripped = line.lstrip(" \t")
