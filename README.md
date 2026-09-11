@@ -100,9 +100,9 @@ your work first, or pass `--allow-dirty` to publish the working tree as it
 stands. Build output such as `dist/` should be ignored by Git.
 
 A release also refuses to run from a branch other than `git.branch`. Pass
-`--allow-branch` to release from the branch that is checked out instead — a
-prerelease cut from a feature branch, typically. It stays where it is rather
-than switching, and the freshness check then runs against that branch's
+`--allow-branch` to release from the branch that is checked out instead,
+typically for a prerelease cut from a feature branch. It stays where it is
+rather than switching, and the freshness check then runs against that branch's
 upstream; `git.on_wrong_branch` is left alone.
 
 | Flag                            | Meaning                                                                                                                          |
