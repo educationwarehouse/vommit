@@ -25,7 +25,18 @@ from .auth import (
     mask,
     verify_token,
 )
-from .build import ProjectWarning, project_warnings
+from .build import (
+    NPMRC,
+    ProjectWarning,
+    clear_npm_auth_token,
+    has_npm_auth_token,
+    npm_token_advice,
+    npm_token_instructions,
+    project_warnings,
+    suggested_commands,
+    verify_npm_token,
+    write_npm_auth_token,
+)
 from .bump import (
     BumpAnswer,
     BumpRequest,
@@ -71,7 +82,7 @@ from .scaffold import (
 )
 from .shell import ContextRunner
 from .undo import UndoPlan, UndoResult, run_undo
-from .versioning import CargoProject, version_source
+from .versioning import CargoProject, NpmProject, version_source
 
 SetupMode = t.Literal["missing", "all"]
 MigrateChoice = t.Literal["interactive", "copy", "stop"]
@@ -424,15 +435,17 @@ def setup(
             return migrate(c, project_dir=project_dir)
 
         config = Config.from_pyproject(root)
+        configured = Config.has_pyproject_config(pyproject)
+        present_paths = (
+            Config.configured_key_paths(pyproject)
+            if mode == "missing" and configured
+            else None
+        )
+        # applies regardless of interactivity: a non-interactive setup gets no
+        # prompt to override a bad default, so it needs the right one even more
+        _suggest_npm_defaults(config, present_paths, root, ContextRunner(c))
 
         if not non_interactive:
-            configured = Config.has_pyproject_config(pyproject)
-            present_paths = (
-                Config.configured_key_paths(pyproject)
-                if mode == "missing" and configured
-                else None
-            )
-
             if mode == "missing" and Config.is_complete(pyproject):
                 rich.print(
                     "[blue]Nothing to configure: existing vommit config is already complete.[/blue]"
@@ -449,6 +462,79 @@ def setup(
         if _report_version_source(c, root):
             _offer_version_files(root, pyproject, non_interactive)
         _report_build(root, pyproject, config, non_interactive)
+        _offer_npm_token(root, ContextRunner(c), non_interactive)
+
+
+def _offer_npm_token(root: Path, runner: ContextRunner, non_interactive: bool) -> None:
+    """
+    Nudges toward a non-interactive npm/bun publish credential (see
+    `npm_token_instructions`), for a project whose version lives in
+    `package.json`. Says nothing at all once one is already configured.
+
+    A non-interactive run only ever prints what to do: there is no prompt to
+    answer it with. An interactive one offers to write the token to
+    `~/.npmrc` on the spot, so `setup` and a first release both happen in one
+    sitting rather than a release failing on this days later.
+    """
+    if not isinstance(version_source(runner, root), NpmProject):
+        return
+    if has_npm_auth_token():
+        return
+
+    rich.print(f"[yellow]{npm_token_instructions()}[/yellow]")
+    if non_interactive:
+        return
+
+    if not _confirm(
+        "Paste the token now to write it to ~/.npmrc?", yes=False, default=False
+    ):
+        return
+
+    token = questionary.password("npm/bun publish token:").unsafe_ask()
+    token = (token or "").strip()
+    if not token:
+        rich.print("[yellow]No token entered; nothing written.[/yellow]")
+        return
+
+    write_npm_auth_token(token)
+    rich.print(f"[green]Wrote a publish token to {NPMRC}.[/green]")
+
+
+def _suggest_npm_defaults(
+    config: Config,
+    present_paths: set[str] | None,
+    root: Path,
+    runner: ContextRunner,
+) -> None:
+    """
+    Swap in npm-flavored suggested defaults for whichever of `commands.build`,
+    `commands.publish` and `pypi.enabled` the interactive prompt is about to
+    ask for, on a project whose version lives in `package.json` (see
+    `suggested_commands`). A field already configured (named in
+    `present_paths`) is left alone; only the value shown as a *suggestion*
+    changes, never one someone already set.
+
+    `pypi.enabled` defaults to `True`, which used to also be what let a
+    release's publish step run at all, so it had to stay on even for a
+    project that had never touched PyPI. Now that publishing for an
+    npm-versioned project no longer depends on it (see `run_release`), it
+    can default to what it always should have meant here: there is no PyPI
+    credential to resolve, because there is no PyPI.
+    """
+    if config.commands is not None:
+        suggested = suggested_commands(root, runner)
+        if suggested is not None:
+            if present_paths is None or "commands.build" not in present_paths:
+                config.commands.build = suggested.build
+            if present_paths is None or "commands.publish" not in present_paths:
+                config.commands.publish = suggested.publish
+
+    if (
+        config.pypi is not None
+        and isinstance(version_source(runner, root), NpmProject)
+        and (present_paths is None or "pypi.enabled" not in present_paths)
+    ):
+        config.pypi.enabled = False
 
 
 def _report_version_source(c: Context, root: Path) -> bool:
@@ -890,40 +976,94 @@ def _undo(
 @task()
 def authenticate(_: Context, no_verify: bool = False, clear: bool = False) -> None:
     """
-    Store a PyPI token in the keyring, replacing any token already there.
+    Store a publish credential, replacing any already there.
 
-    The token is checked against PyPI before it is stored, so a mistyped one is
-    caught now rather than at the end of a release, and a rejected one leaves
-    the token you already had in place. Pass --no-verify for an index that
-    issues tokens PyPI would not recognise, or --clear to drop the stored token
-    before being asked for the new one.
+    For an npm-versioned project (see NpmProject) that means an `_authToken`
+    line in ~/.npmrc, checked with a read-only `whoami` before it is written;
+    for everything else, a PyPI token in the keyring, exactly as before. Pass
+    --no-verify to skip that check, or --clear to drop the stored credential
+    before being asked for a new one.
     """
-    store = TokenStore()
+    runner = ContextRunner(_)
+    root = Path.cwd()
     with _reported():
-        if clear:
-            rich.print(
-                "[yellow]Cleared the stored token.[/yellow]"
-                if store.forget()
-                else "[yellow]No stored token to clear.[/yellow]"
-            )
+        if isinstance(version_source(runner, root), NpmProject):
+            _authenticate_npm(runner, no_verify=no_verify, clear=clear)
+        else:
+            _authenticate_pypi(no_verify=no_verify, clear=clear)
 
-        existing = store.stored()
-        token = _ask_token(replacing=bool(existing))
-        store.store(token if no_verify else _verified(token, existing))
+
+def _authenticate_pypi(no_verify: bool, clear: bool) -> None:
+    store = TokenStore()
+    if clear:
+        rich.print(
+            "[yellow]Cleared the stored token.[/yellow]"
+            if store.forget()
+            else "[yellow]No stored token to clear.[/yellow]"
+        )
+
+    existing = store.stored()
+    token = _ask_token(replacing=bool(existing))
+    store.store(token if no_verify else _verified(token, existing))
     rich.print("[green]Token stored.[/green]")
+
+
+def _authenticate_npm(runner: ContextRunner, no_verify: bool, clear: bool) -> None:
+    if clear:
+        rich.print(
+            "[yellow]Cleared the stored token.[/yellow]"
+            if clear_npm_auth_token()
+            else "[yellow]No stored token to clear.[/yellow]"
+        )
+
+    token = _ask_npm_token(replacing=has_npm_auth_token())
+    if not no_verify:
+        verify_npm_token(token, runner)
+    write_npm_auth_token(token)
+    rich.print(f"[green]Token stored in {NPMRC}.[/green]")
+
+
+def _ask_npm_token(replacing: bool) -> str:
+    if not sys.stdin.isatty():
+        raise VommitError(
+            "No npm/bun token found and no terminal to ask on; set "
+            "NPM_CONFIG_TOKEN in the environment, or run `vommit authenticate`."
+        )
+    rich.print(f"[blue]{npm_token_advice()}[/blue]")
+    lead = "Replace the stored npm/bun token" if replacing else "npm/bun token"
+    answer = questionary.password(f"{lead} (input hidden):").unsafe_ask()
+    if not answer:
+        raise VommitError("No token entered.")
+    return str(answer)
 
 
 @task()
 def ensure_authenticated(_: Context, show: bool = False) -> None:
     """
-    Make sure a PyPI token is available, asking only when there is none.
+    Make sure a publish credential is available, asking only when there is none.
 
-    Usable as a `pre` task; `release` calls the same resolution in-process, so
+    For an npm-versioned project that means an `_authToken` line in
+    ~/.npmrc; for everything else, a PyPI token, exactly as before. Usable
+    as a `pre` task; `release` calls the same resolution in-process, so
     that a `--noop` run is not stopped for a credential it will never use.
-    Pass --show to see which token that is and where it came from.
+    Pass --show to see which one that is and where it came from.
     """
+    runner = ContextRunner(_)
+    root = Path.cwd()
     with _reported():
-        source, token = _sourced_token(Config.from_pyproject())
+        if isinstance(version_source(runner, root), NpmProject):
+            if not has_npm_auth_token():
+                raise VommitError(
+                    f"No npm/bun token found in {NPMRC}; run `vommit "
+                    "authenticate` to store one, or set NPM_CONFIG_TOKEN in "
+                    "the environment."
+                )
+            if show:
+                rich.print(f"[green]npm/bun token[/green] configured in {NPMRC}.")
+            else:
+                rich.print("[green]npm/bun token available.[/green]")
+            return
+        source, token = _sourced_token(Config.from_pyproject(root))
 
     if show:
         rich.print(f"[green]PyPI token[/green] from the {source}: {mask(token)}")

@@ -3,11 +3,11 @@ Whether this project's build configuration will produce the release we intend.
 
 Two kinds of question, reported together:
 
-- *will the configured command build this project at all* -- the module uv_build
-  looks for, the maturin target it would silently narrow to;
-- *is the project on the build backend vommit releases with* -- Hatchling
-  instead of uv_build, or a uv_build pin outside the range vommit is tested
-  against.
+- *will the configured command build this project at all?* This covers the
+  module uv_build looks for and the maturin target it would silently narrow to;
+- *is the project on the build backend vommit releases with?* This covers
+  Hatchling instead of uv_build, or a uv_build pin outside the range vommit is
+  tested against.
 
 A release runs `clean` and `build` *after* the bump, so a build that cannot
 work is found out once the version has been written, the changelog rewritten
@@ -18,12 +18,14 @@ nothing, and again (report-only) at the head of a release.
 They warn rather than refuse. The build command is a shell string and the ways
 to make one work are open-ended; the only thing worth saying with confidence is
 that a specific, verified misconfiguration is present. Each warning carries a
-stable id, which is what a project puts in `ignore` to stop hearing it, and --
-where the change is mechanical and cannot lose information -- a `fix` that
-writes it.
+stable id, which is what a project puts in `ignore` to stop hearing it, and,
+where the change is mechanical and cannot lose information, a `fix` that writes
+it.
 """
 
 import dataclasses as dc
+import json
+import shutil
 import typing as t
 from pathlib import Path
 
@@ -31,13 +33,20 @@ from packaging.requirements import InvalidRequirement, Requirement
 from packaging.specifiers import SpecifierSet
 from packaging.utils import canonicalize_name
 
-from .config import Config
+from .config import CommandConfig, Config
+from .errors import VommitError
 from .helpers import read_toml
 from .migrate import normalise_name, project_name
+from .shell import Runner
+from .versioning import NPM, NpmProject, version_source
 
 PYPROJECT = "pyproject.toml"
 UV_BUILD = "uv build"
 UV_PUBLISH = "uv publish"
+NPM_BUILD = "npm run build"
+NPM_PUBLISH = "npm publish"
+BUN_BUILD = "bun run build"
+BUN_PUBLISH = "bun publish"
 HATCHLING = "hatchling.build"
 
 #: Where the uv build backend looks when the project does not say otherwise.
@@ -95,6 +104,246 @@ def project_warnings(root: Path, config: Config) -> list[ProjectWarning]:
     ignored = set(config.ignore)
     found = [*backend_warnings(root), *command_warnings(root, config)]
     return [warning for warning in found if warning.id not in ignored]
+
+
+def suggested_commands(root: Path, runner: Runner) -> CommandConfig | None:
+    """
+    JS-flavored release commands to offer at `setup`, for a project whose
+    version lives in `package.json` rather than `pyproject.toml` (see
+    `NpmProject`). None when this is not such a project, in which case the
+    Python-flavored `CommandConfig` defaults (`uv build`/`uv publish`) apply
+    as usual.
+
+    `build` is suggested only when `package.json` itself declares a "build"
+    script. Plenty of npm packages have no build step at all (a plain `.js`
+    file, say), and suggesting one that fails on every fresh setup would be
+    worse than suggesting none: `clean = ""`/`build = ""` is `CommandConfig`'s
+    own way of saying a step does not apply here.
+
+    Raises `VommitError` when this is an npm-versioned project but neither
+    `npm` nor `bun` is on PATH: a publish command that cannot possibly run is
+    a worse default than none, and a silent one would go unnoticed until an
+    actual release failed on it.
+    """
+    if not isinstance(version_source(runner, root), NpmProject):
+        return None
+
+    build_command, publish_command = _npm_or_bun_commands()
+
+    commands = CommandConfig()
+    commands.build = build_command if _has_npm_build_script(root) else ""
+    commands.publish = publish_command
+    return commands
+
+
+def _npm_or_bun_binary() -> str:
+    """
+    Which JS package manager to run commands with: `bun` or `npm`.
+
+    bun is checked first: installing npm (meaning, in practice, Node) can add
+    hundreds of megabytes a project might otherwise have no use for, so a
+    machine that already has bun and nothing else should be offered `bun`
+    commands rather than told to install npm for one it did not ask to run
+    yet. Raises `VommitError` when neither is on PATH.
+    """
+    if shutil.which("bun"):
+        return "bun"
+    if shutil.which("npm"):
+        return "npm"
+    raise VommitError(
+        "Neither `npm` nor `bun` is on PATH. Install one of them, set "
+        "`commands.publish` (and `commands.build`, if needed) yourself, or "
+        "authenticate later once one is installed."
+    )
+
+
+def _npm_or_bun_commands() -> tuple[str, str]:
+    """
+    (build, publish) for whichever JS package manager is actually installed.
+    """
+    if _npm_or_bun_binary() == "bun":
+        return BUN_BUILD, BUN_PUBLISH
+    return NPM_BUILD, NPM_PUBLISH
+
+
+def npm_whoami_command() -> str:
+    """
+    The read-only command that confirms a configured npm/bun credential
+    authenticates at all, without publishing anything.
+
+    There is no npm/bun equivalent of `auth.verify_token`'s trick (posting a
+    deliberately incomplete upload so the index authenticates it before
+    finding it wanting): `whoami` is the closest safe, read-only substitute.
+    It can only confirm the credential is valid, never that it also carries
+    the "bypass 2FA" exemption a publish specifically needs; see
+    `npm_token_instructions` for why that is unknowable from here at all.
+    """
+    binary = _npm_or_bun_binary()
+    return f"{binary} pm whoami" if binary == "bun" else f"{binary} whoami"
+
+
+#: Where npm and bun both read (and, together with the registry line below,
+#: write) a publish credential. A project-local `.npmrc` would also work, but
+#: is more likely to end up committed with a live token in it by accident, so
+#: `setup` only ever offers the one in the home directory.
+NPMRC = Path.home() / ".npmrc"
+NPM_REGISTRY = "registry.npmjs.org"
+
+
+def has_npm_auth_token(npmrc: Path = NPMRC, registry: str = NPM_REGISTRY) -> bool:
+    """
+    Whether `npmrc` already configures a publish credential for `registry`.
+
+    Only recognises the `_authToken` form, the one an Automation or a
+    Granular Access Token uses and the one `setup` offers to write. A project
+    authenticating some other way (`_auth`, a username/password pair, an
+    environment variable set outside this file entirely) is not detected
+    here and gets asked again, which is a repeated nag, not a correctness
+    problem: nothing here is ever a precondition for publishing to succeed,
+    only for whether `setup` mentions it.
+    """
+    if not npmrc.exists():
+        return False
+    needle = f"//{registry}/:_authToken="
+    return any(
+        line.strip().startswith(needle) for line in npmrc.read_text().splitlines()
+    )
+
+
+def write_npm_auth_token(
+    token: str, npmrc: Path = NPMRC, registry: str = NPM_REGISTRY
+) -> None:
+    """
+    Stores `token` as `npmrc`'s `_authToken` line for `registry`, replacing
+    one already there rather than adding a second, conflicting line for the
+    same registry (which is what a plain append would do on every
+    re-authentication after the first).
+    """
+    needle = f"//{registry}/:_authToken="
+    line = f"{needle}{token}\n"
+    if not npmrc.exists():
+        npmrc.write_text(line)
+        return
+
+    lines = npmrc.read_text().splitlines(keepends=True)
+    for index, existing in enumerate(lines):
+        if existing.strip().startswith(needle):
+            lines[index] = line
+            npmrc.write_text("".join(lines))
+            return
+
+    text = "".join(lines)
+    if text and not text.endswith("\n"):
+        text += "\n"
+    npmrc.write_text(text + line)
+
+
+def clear_npm_auth_token(npmrc: Path = NPMRC, registry: str = NPM_REGISTRY) -> bool:
+    """
+    Removes `npmrc`'s `_authToken` line for `registry`, if there is one.
+
+    Returns whether a line was actually removed, the way `TokenStore.forget`
+    reports the same thing for the PyPI keyring, so `authenticate` can say
+    truthfully whether there was anything to clear.
+    """
+    if not npmrc.exists():
+        return False
+    needle = f"//{registry}/:_authToken="
+    lines = npmrc.read_text().splitlines(keepends=True)
+    kept = [line for line in lines if not line.strip().startswith(needle)]
+    if len(kept) == len(lines):
+        return False
+    npmrc.write_text("".join(kept))
+    return True
+
+
+def verify_npm_token(token: str, runner: Runner) -> None:
+    """
+    Confirms `token` actually authenticates, before it is ever written
+    anywhere: checked via the `NPM_CONFIG_TOKEN` environment variable rather
+    than `npmrc`, the same shape `auth.verify_token` checks a PyPI token
+    before `authenticate` stores it, so a rejected token leaves whatever was
+    already in `npmrc` untouched rather than overwriting it with one that
+    does not work. See `npm_whoami_command` for what this can and cannot
+    actually confirm.
+    """
+    command = npm_whoami_command()
+    result = runner.run(command, env={"NPM_CONFIG_TOKEN": token})
+    if not result.ok:
+        raise VommitError(
+            f"`{command}` failed: {result.error}\nThis token does not seem "
+            "to work; check it and try again."
+        )
+
+
+def npm_token_advice() -> str:
+    """
+    Where to get a non-interactive-safe npm/bun publish credential, and what
+    to set on it when creating one. The part every context asking for a
+    token can show, whether or not it also has to say where the token then
+    goes (see `npm_token_instructions`, for a context that does).
+
+    Most packages on the npm registry require two-factor authentication for
+    publishing by default, which ordinarily means a live browser click on
+    every single release; neither this nor any other automation can satisfy
+    that, because it is specifically designed not to be satisfiable by a
+    stored credential. An Automation Token, or a Granular Access Token with
+    "Bypass two-factor authentication" enabled, is the documented exception:
+    npm treats either as already having proven who is publishing, so it never
+    asks for a one-time password from a release authenticating with one.
+
+    Crucially, that exemption is a property of how the token was created, not
+    of whether `npmrc` has an `_authToken` line at all: the credential
+    `npm login`/`bunx npm login` produces is a regular one, and does *not*
+    get the exemption, so pasting it here still gets asked for an OTP on
+    every publish. `has_npm_auth_token` cannot tell the two apart, because
+    npm does not expose a token's own bypass setting anywhere client-side;
+    only the token's issuer (npmjs.com) knows that, so it can only ever
+    detect "some token is here", not "the right kind is here". Worth stating
+    plainly here rather than let that silence be read as "this is handled".
+    """
+    return (
+        "`npm publish`/`bun publish` will ask for a live one-time password "
+        "on every release if the package requires 2FA to publish, which is "
+        "the default. An Automation Token, or a Granular Access Token with "
+        '"Bypass two-factor authentication" enabled, is exempt from that. '
+        "Generate one at https://www.npmjs.com/settings/~/tokens (checking "
+        "that box explicitly). A token from `npm login`/`bunx npm login` "
+        "does NOT count here: it does not carry that exemption, so it will "
+        "still be asked for an OTP on every publish."
+    )
+
+
+def npm_token_instructions(npmrc: Path = NPMRC, registry: str = NPM_REGISTRY) -> str:
+    """
+    What to tell someone about configuring a non-interactive npm/bun publish
+    credential, for a project whose version lives in `package.json`, when
+    they also have to be told where the token itself then goes (`setup`'s
+    context: it only ever suggests this, it does not write the file itself).
+    See `npm_token_advice` for a context that writes it and only needs the
+    first half of this message.
+    """
+    return (
+        f"No npm publish credential found. {npm_token_advice()}\nAdd\n"
+        f"    //{registry}/:_authToken=<token>\n"
+        f"to {npmrc}."
+    )
+
+
+def _has_npm_build_script(root: Path) -> bool:
+    package_json = root / NPM
+    if not package_json.exists():  # pragma: no cover - backstop, not a path
+        # unreachable through `suggested_commands`, its only caller: that
+        # already confirmed `version_source` read a version from this exact
+        # file, which requires it to exist
+        return False
+    try:
+        data = json.loads(package_json.read_text())
+    except json.JSONDecodeError:  # pragma: no cover - backstop, not a path
+        # same reasoning: a version was already read from this file
+        return False
+    scripts = data.get("scripts") if isinstance(data, dict) else None
+    return isinstance(scripts, dict) and bool(str(scripts.get("build", "")).strip())
 
 
 def command_warnings(root: Path, config: Config) -> list[ProjectWarning]:
@@ -178,9 +427,9 @@ def _hatchling_warning(
     Hatchling instead of uv_build, with an offer to swap when nothing is lost.
 
     The swap is two keys, but only for a project whose artifact is described by
-    nothing but those keys. Anything Hatchling-specific -- a build target, a
-    dynamic version, an extra build requirement -- has no uv_build equivalent to
-    translate into, so the blockers are named instead of guessed at.
+    nothing but those keys. Anything Hatchling-specific, such as a build target,
+    a dynamic version, or an extra build requirement, has no uv_build equivalent
+    to translate into, so the blockers are named instead of guessed at.
     """
     warning_id = "hatchling-backend"
     head = (

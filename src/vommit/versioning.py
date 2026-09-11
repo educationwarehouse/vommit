@@ -432,14 +432,98 @@ class CargoProject(VersionSource):
             )
 
 
+NPM = "package.json"
+
+
+@dc.dataclass(frozen=True)
+class NpmProject(VersionSource):
+    """
+    A project whose version is `.version` in `package.json`.
+
+    npm's version field is plain SemVer, the same target format Cargo needs
+    for `Cargo.toml`, so the arithmetic is borrowed the same way `CargoProject`
+    borrows it: run against a throwaway `pyproject.toml` holding nothing but
+    the current version, then convert whatever uv computes back with
+    `to_cargo_version`. That conversion has nothing Cargo-specific in it
+    despite the name: PEP 440 -> plain SemVer is exactly what npm's version
+    field also requires, and the two ecosystems' prerelease spelling
+    (`-beta.1`) is identical.
+
+    Deliberately does not relock a lockfile: npm, pnpm, yarn and bun each keep
+    a different one (and disagree on shape), and a lockfile a bump left stale
+    is no different from one any other manual edit to `package.json` left
+    stale; the next install fixes it. `lockfile` always reports as absent so
+    a stale one is never staged into the release commit either.
+    """
+
+    manifest_name: t.ClassVar[str] = NPM
+    lockfile_name: t.ClassVar[str] = "package-lock.json"
+
+    @property
+    def lockfile(self) -> Path:
+        # See class docstring: never relocked, so `bump.py`'s
+        # `project.lockfile.exists()` check must never see one either, or a
+        # stale lockfile would get staged into the release commit unchanged.
+        return self.root / ".vommit-npm-project-has-no-managed-lockfile"
+
+    def version_in(self, manifest: str) -> str | None:
+        try:
+            data = json.loads(manifest)
+        except json.JSONDecodeError:
+            return None
+        version = data.get("version") if isinstance(data, dict) else None
+        parsed = parse_version(str(version)) if version is not None else None
+        return str(parsed) if parsed else None
+
+    def preview(self, args: list[str]) -> str:
+        current = self._require_current()
+        with tempfile.TemporaryDirectory() as scratch:
+            probe = Path(scratch)
+            (probe / PYPROJECT).write_text(
+                f'[project]\nname = "vommit-version-probe"\nversion = "{current}"\n'
+            )
+            # no lockfile to keep in step and nothing to sync: the probe
+            # exists only to be read back out
+            return self._uv_version(probe, args, ["--dry-run", "--frozen"])
+
+    def apply(self, args: list[str], frozen: bool = False) -> str:
+        # `frozen` governs lockfile relocking on `CargoProject`/`UvProject`;
+        # this class never relocks one at all (see class docstring), so the
+        # flag has nothing to act on here. It is accepted only to satisfy the
+        # shared `VersionSource.apply` signature every caller uses uniformly.
+        version = self.preview(args)
+        npm_version = to_cargo_version(version)
+
+        document = json.loads(self.manifest.read_text())
+        if not isinstance(document, dict):
+            raise VommitError(f"{NPM} must contain a JSON object.")
+        document["version"] = npm_version
+        self.manifest.write_text(json.dumps(document, indent=2) + "\n")
+        return version
+
+    def _require_current(self) -> str:
+        current = self.current_version()
+        if current:
+            return current
+        raise VommitError(
+            f"No `.version` in {relative_path(self.manifest, self.root)}, "
+            "so there is no version to bump."
+        )
+
+
 def version_source(runner: Runner, root: Path) -> VersionSource:
     """
     Where this project keeps the version vommit is asked to move.
 
     `Cargo.toml` wins only for the one shape that leaves uv nothing to work
     with: a maturin build whose `pyproject.toml` declares the version dynamic.
-    Anything else, including a Python package that merely happens to vendor a
-    crate, keeps `[project].version`, because that is still what gets built.
+    A real `[project].version` wins next: that is still what gets built, even
+    for a Python package that merely happens to vendor a crate, or one that
+    carries a frontend's `package.json` alongside the code that actually gets
+    released. Only once neither of those states a version does `package.json`
+    get a look in, which is what lets a project with no `pyproject.toml`
+    beyond a `[tool.vommit]` stanza (see `NpmProject`) still resolve to
+    something.
     """
     pyproject = root / PYPROJECT
     cargo = CargoProject(
@@ -449,7 +533,16 @@ def version_source(runner: Runner, root: Path) -> VersionSource:
     )
     if _is_dynamic_maturin(pyproject) and cargo.current_version():
         return cargo
-    return UvProject(runner=runner, root=root)
+
+    uv_project = UvProject(runner=runner, root=root)
+    if uv_project.current_version() is not None:
+        return uv_project
+
+    npm_project = NpmProject(runner=runner, root=root)
+    if npm_project.current_version() is not None:
+        return npm_project
+
+    return uv_project
 
 
 def _maturin_manifest(pyproject: Path) -> Path | None:

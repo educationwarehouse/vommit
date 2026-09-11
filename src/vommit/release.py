@@ -31,7 +31,7 @@ from .editor import EntryEditor
 from .errors import VommitError
 from .git import GitRepo
 from .shell import CommandResult, Runner, shell
-from .versioning import VersionSource, version_source
+from .versioning import NpmProject, VersionSource, version_source
 
 CLEAN = "clean"
 BUILD = "build"
@@ -154,7 +154,14 @@ def run_release(
     git = config.active_git
     commands = config.commands
     pypi = config.active_pypi
-    steps = _plan(commands, bool(pypi))
+    # `pypi.enabled = false` means "skip the publish phase entirely" for a
+    # project whose artifact would otherwise go to PyPI, and existing
+    # projects rely on exactly that (see test_publishing_is_skipped_when_
+    # pypi_is_disabled). An npm-versioned project has no PyPI phase to skip
+    # in the first place, so it publishes on `commands.publish` alone,
+    # independent of a setting that was never about it.
+    publish_phase = bool(pypi) or isinstance(project, NpmProject)
+    steps = _plan(commands, publish_phase)
 
     if git:
         # both of these ask the same question: will the artifact that goes to
@@ -166,8 +173,12 @@ def run_release(
     # credentials are resolved before the first write, for the same reason bump
     # checks the tag before creating the commit: discovering afterwards that
     # there is no token would leave a pushed release with nothing on PyPI.
+    # Gated on `pypi` specifically, not just "is something being published":
+    # an npm publish authenticates through its own `.npmrc`, not a token
+    # vommit resolves and injects, so asking for a PyPI one here would ask
+    # for a credential that release will never use.
     publishing = any(step.name == PUBLISH for step in steps)
-    token = authenticate() if publishing and not request.noop else None
+    token = authenticate() if pypi and publishing and not request.noop else None
 
     bumped = None
     if request.no_bump:
@@ -461,10 +472,21 @@ def _run(
         )
 
 
+#: npm/bun's own wording for "this exact version is already on the
+#: registry", which they report as a 403 same as an actual credentials
+#: rejection. A version conflict is not fixable by a new token, so it must be
+#: told apart from the credentials case rather than assumed to be one.
+_VERSION_ALREADY_PUBLISHED = "cannot publish over the previously published"
+
+
 def _rejected_hint(result: CommandResult) -> str:
     """
-    A 403 from an upload is almost always the token, not the package.
+    A 403 from an upload is almost always the token, not the package, except
+    for npm/bun's specific version-conflict shape, which is never the token.
     """
-    if "403" not in result.stdout + result.stderr:
+    output = result.stdout + result.stderr
+    if _VERSION_ALREADY_PUBLISHED in output:
+        return ""
+    if "403" not in output:
         return ""
     return "The index refused the credentials; store a new token with `vommit authenticate`."
