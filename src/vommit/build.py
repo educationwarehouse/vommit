@@ -38,7 +38,7 @@ from .errors import VommitError
 from .helpers import read_toml
 from .migrate import normalise_name, project_name
 from .shell import Runner
-from .versioning import NPM, NpmProject, version_source
+from .versioning import NPM
 
 PYPROJECT = "pyproject.toml"
 UV_BUILD = "uv build"
@@ -161,13 +161,14 @@ def project_warnings(root: Path, config: Config) -> list[ProjectWarning]:
     return [warning for warning in found if warning.id not in ignored]
 
 
-def suggested_commands(root: Path, runner: Runner) -> CommandConfig | None:
+def suggested_commands(root: Path) -> CommandConfig | None:
     """
     JS-flavored release commands to offer at `setup`, for a project whose
     version lives in `package.json` rather than `pyproject.toml` (see
-    `NpmProject`). None when this is not such a project, in which case the
-    Python-flavored `CommandConfig` defaults (`uv build`/`uv publish`) apply
-    as usual.
+    `NpmProject`). Only the caller knows that -- it has the resolved
+    `VersionSource` already -- so this answers for a project it has been told
+    is one, and returns None when `package.json` turns out not to be readable
+    after all.
 
     `build` is suggested only when `package.json` itself declares a "build"
     script. Plenty of npm packages have no build step at all (a plain `.js`
@@ -175,12 +176,11 @@ def suggested_commands(root: Path, runner: Runner) -> CommandConfig | None:
     worse than suggesting none: `clean = ""`/`build = ""` is `CommandConfig`'s
     own way of saying a step does not apply here.
 
-    Raises `VommitError` when this is an npm-versioned project but neither
-    `npm` nor `bun` is on PATH: a publish command that cannot possibly run is
-    a worse default than none, and a silent one would go unnoticed until an
-    actual release failed on it.
+    Raises `VommitError` when neither `npm` nor `bun` is on PATH: a publish
+    command that cannot possibly run is a worse default than none, and a
+    silent one would go unnoticed until an actual release failed on it.
     """
-    if not isinstance(version_source(runner, root), NpmProject):
+    if not (root / NPM).exists():  # pragma: no cover - backstop, not a path
         return None
 
     build_command, publish_command = _npm_or_bun_commands()
@@ -277,6 +277,11 @@ def write_npm_auth_token(
     needle = f"//{registry}/:_authToken="
     line = f"{needle}{token}\n"
     if not npmrc.exists():
+        # created before it is written, so the token is never briefly readable
+        # at whatever the umask allows; npm writes this file 0600 for the same
+        # reason. An `npmrc` that already exists keeps the mode it has: its
+        # owner may have widened it deliberately, and this only adds a line.
+        npmrc.touch(mode=0o600)
         npmrc.write_text(line)
         return
 
@@ -312,10 +317,36 @@ def clear_npm_auth_token(npmrc: Path = NPMRC, registry: str = NPM_REGISTRY) -> b
     return True
 
 
+def npm_token_env(token: str, registry: str = NPM_REGISTRY) -> dict[str, str]:
+    """
+    The environment that makes npm *or* bun authenticate as `token`, without
+    either of them reading `npmrc` for it.
+
+    Both are set because the two managers read exactly one each, and not the
+    same one (measured against npm 10.9.7 and bun 1.2):
+
+    - npm ignores `NPM_CONFIG_TOKEN` outright. Its env override is the
+      registry-scoped config key, `npm_config_//<registry>/:_authToken`, odd as
+      that looks as a variable name.
+    - bun is the mirror image: it reads `NPM_CONFIG_TOKEN` and ignores the
+      scoped key.
+
+    Getting this wrong is worse than not checking at all, which is why it is
+    spelled out here. Setting only `NPM_CONFIG_TOKEN` leaves npm falling back
+    to `npmrc`, so a mistyped token "verifies" against the credential already
+    on disk and then overwrites it -- the exact outcome `verify_npm_token`
+    exists to prevent.
+    """
+    return {
+        "NPM_CONFIG_TOKEN": token,
+        f"npm_config_//{registry}/:_authToken": token,
+    }
+
+
 def verify_npm_token(token: str, runner: Runner) -> None:
     """
     Confirms `token` actually authenticates, before it is ever written
-    anywhere: checked via the `NPM_CONFIG_TOKEN` environment variable rather
+    anywhere: checked through the environment (see `npm_token_env`) rather
     than `npmrc`, the same shape `auth.verify_token` checks a PyPI token
     before `authenticate` stores it, so a rejected token leaves whatever was
     already in `npmrc` untouched rather than overwriting it with one that
@@ -323,7 +354,7 @@ def verify_npm_token(token: str, runner: Runner) -> None:
     actually confirm.
     """
     command = npm_whoami_command()
-    result = runner.run(command, env={"NPM_CONFIG_TOKEN": token})
+    result = runner.run(command, env=npm_token_env(token))
     if not result.ok:
         raise VommitError(
             f"`{command}` failed: {result.error}\nThis token does not seem "
@@ -389,13 +420,12 @@ def _has_npm_build_script(root: Path) -> bool:
     package_json = root / NPM
     if not package_json.exists():  # pragma: no cover - backstop, not a path
         # unreachable through `suggested_commands`, its only caller: that
-        # already confirmed `version_source` read a version from this exact
-        # file, which requires it to exist
+        # checks for this exact file before it gets here
         return False
     try:
         data = json.loads(package_json.read_text())
     except json.JSONDecodeError:  # pragma: no cover - backstop, not a path
-        # same reasoning: a version was already read from this file
+        # a manifest nothing can read states no build script either
         return False
     scripts = data.get("scripts") if isinstance(data, dict) else None
     return isinstance(scripts, dict) and bool(str(scripts.get("build", "")).strip())

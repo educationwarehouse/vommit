@@ -144,7 +144,9 @@ def test_apply_never_touches_a_lockfile(tmp_path):
     project = npm(tmp_path)
     project.apply_bump("minor")
 
-    assert not project.lockfile.exists()
+    # no lockfile of its own, so nothing downstream stages or relocks one
+    assert project.lockfile is None
+    assert project.lockfile_name is None
     assert (tmp_path / "package-lock.json").read_text() == '{"version": "1.0.0"}\n'
 
 
@@ -215,3 +217,76 @@ def test_version_source_falls_back_to_uv_project_when_nothing_states_a_version(
     source = version_source(LocalRunner(), tmp_path)
     assert isinstance(source, UvProject)
     assert source.current_version() is None
+
+
+def test_apply_keeps_the_manifest_formatting_it_found(tmp_path):
+    """
+    Only the version field changes. A bump that reformatted the whole manifest
+    would put every line of it in the release commit's diff and conflict with
+    anything else touching the file; `npm version` preserves indentation for
+    the same reason.
+    """
+    manifest = tmp_path / "package.json"
+    manifest.write_text(
+        '{\n\t"name": "pkg",\n\t"version": "1.0.0",\n\t"private": true\n}\n'
+    )
+
+    npm(tmp_path).apply_bump("minor")
+
+    assert manifest.read_text() == (
+        '{\n\t"name": "pkg",\n\t"version": "1.1.0",\n\t"private": true\n}\n'
+    )
+
+
+def test_apply_keeps_four_space_indentation(tmp_path):
+    manifest = tmp_path / "package.json"
+    manifest.write_text('{\n    "name": "pkg",\n    "version": "1.0.0"\n}\n')
+
+    npm(tmp_path).apply_bump("patch")
+
+    assert manifest.read_text() == (
+        '{\n    "name": "pkg",\n    "version": "1.0.1"\n}\n'
+    )
+
+
+def test_apply_does_not_add_a_trailing_newline_that_was_not_there(tmp_path):
+    manifest = tmp_path / "package.json"
+    manifest.write_text('{"name": "pkg", "version": "1.0.0"}')
+
+    npm(tmp_path).apply_bump("patch")
+
+    text = manifest.read_text()
+    assert not text.endswith("\n")
+    assert json.loads(text)["version"] == "1.0.1"
+
+
+def test_a_manifest_with_nothing_indented_gets_npms_own_default(tmp_path):
+    manifest = tmp_path / "package.json"
+    manifest.write_text('{"name": "pkg", "version": "1.0.0"}\n')
+
+    npm(tmp_path).apply_bump("patch")
+
+    assert manifest.read_text() == '{\n  "name": "pkg",\n  "version": "1.0.1"\n}\n'
+
+
+def test_version_source_names_an_npm_version_it_cannot_bump(tmp_path):
+    """
+    `1.0.0-alpha.beta` is legal SemVer with no PEP 440 reading, so `version_in`
+    can only answer None for it -- the same answer it gives for a manifest with
+    no version at all. Falling through on that would blame pyproject.toml for a
+    project that plainly states a version, so the version itself is named.
+    """
+    package(tmp_path, "1.0.0-alpha.beta")
+
+    with pytest.raises(VommitError, match="1.0.0-alpha.beta"):
+        version_source(LocalRunner(), tmp_path)
+
+
+def test_a_manifest_with_no_version_still_falls_through(tmp_path):
+    """
+    The other half of the distinction above: no version is not an unsupported
+    version, and must not start raising.
+    """
+    package(tmp_path, version=None)
+
+    assert isinstance(version_source(LocalRunner(), tmp_path), UvProject)

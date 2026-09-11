@@ -54,6 +54,10 @@ def ledger(sandbox: Sandbox) -> list[str]:
     return path.read_text().split() if path.exists() else []
 
 
+def fail_if_called() -> str:
+    raise AssertionError("authenticate() should not run for an npm project")
+
+
 def release(
     sandbox: Sandbox,
     no_bump: bool = False,
@@ -367,10 +371,6 @@ def test_publish_does_not_resolve_a_pypi_token_for_an_npm_project(sandbox):
     vommit resolves and injects, so asking for a PyPI one here would be
     asking for a credential this release will never use.
     """
-
-    def fail_if_called() -> str:
-        raise AssertionError("authenticate() should not run for an npm project")
-
     with_pipeline(sandbox)
     sandbox.set_config("tool.vommit.pypi", enabled=False)
     as_npm_project(sandbox)
@@ -381,14 +381,13 @@ def test_publish_does_not_resolve_a_pypi_token_for_an_npm_project(sandbox):
     assert result.published is True
 
 
-def test_publish_still_resolves_a_pypi_token_if_left_enabled_for_an_npm_project(
-    sandbox,
-):
+def test_an_npm_project_never_resolves_a_pypi_token(sandbox):
     """
-    `pypi.enabled` is not forced off for an npm project; it defaults on
-    (`setup` suggests turning it off, see `_suggest_npm_defaults`, but does
-    not force it), so a project that has not done that still gets the old,
-    if pointless, token resolution rather than a silent behavior change.
+    `pypi.enabled` defaults to true and `setup` only ever *suggests* turning it
+    off, so every npm project configured before vommit knew what one was still
+    has it set. Resolving on that would demand a PyPI credential for a release
+    that publishes to npm and never reads one, so the project decides this,
+    not the setting.
     """
     script = recorder(sandbox, "show-token.sh", f'echo "$UV_PUBLISH_TOKEN" >> {LEDGER}')
     with_pipeline(sandbox, publish=script)
@@ -396,9 +395,11 @@ def test_publish_still_resolves_a_pypi_token_if_left_enabled_for_an_npm_project(
     as_npm_project(sandbox)
     sandbox.commits("feat: something releasable")
 
-    release(sandbox)
+    result = release(sandbox, authenticate=fail_if_called)
 
-    assert TOKEN in ledger(sandbox)
+    # published, and nothing was ever asked for a PyPI token to do it
+    assert result.published is True
+    assert TOKEN not in ledger(sandbox)
 
 
 def test_a_config_without_any_commands_only_bumps_and_pushes(sandbox):

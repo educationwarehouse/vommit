@@ -1,4 +1,5 @@
 import json
+import stat
 from pathlib import Path
 
 import pytest
@@ -507,25 +508,30 @@ def only_on_path(monkeypatch, tmp_path: Path, *names: str) -> None:
 
 
 def test_suggested_commands_is_none_for_a_python_project(tmp_path, monkeypatch):
+    """
+    Whether the project is npm-versioned is the caller's question (it has the
+    resolved `VersionSource` already); all this checks is that there is a
+    manifest to suggest commands for.
+    """
     only_on_path(monkeypatch, tmp_path, "npm", "bun")
     root = project(
         tmp_path / "root",
         '[project]\nname = "mypkg"\nversion = "1.0.0"\n' + UV_BUILD_BACKEND,
     )
-    assert suggested_commands(root, LocalRunner()) is None
+    assert suggested_commands(root) is None
 
 
-def test_suggested_commands_is_none_when_nothing_states_a_version(tmp_path, monkeypatch):
+def test_suggested_commands_is_none_without_a_package_json(tmp_path, monkeypatch):
     only_on_path(monkeypatch, tmp_path, "npm", "bun")
     root = tmp_path / "root"
     root.mkdir()
-    assert suggested_commands(root, LocalRunner()) is None
+    assert suggested_commands(root) is None
 
 
 def test_suggested_commands_prefers_bun_when_both_are_installed(tmp_path, monkeypatch):
     only_on_path(monkeypatch, tmp_path, "npm", "bun")
     root = npm_package(tmp_path / "root")
-    suggestion = suggested_commands(root, LocalRunner())
+    suggestion = suggested_commands(root)
 
     assert suggestion is not None
     assert suggestion.publish == BUN_PUBLISH
@@ -534,7 +540,7 @@ def test_suggested_commands_prefers_bun_when_both_are_installed(tmp_path, monkey
 def test_suggested_commands_falls_back_to_npm_without_bun(tmp_path, monkeypatch):
     only_on_path(monkeypatch, tmp_path, "npm")
     root = npm_package(tmp_path / "root")
-    suggestion = suggested_commands(root, LocalRunner())
+    suggestion = suggested_commands(root)
 
     assert suggestion is not None
     assert suggestion.publish == NPM_PUBLISH
@@ -545,13 +551,13 @@ def test_suggested_commands_refuses_to_guess_without_npm_or_bun(tmp_path, monkey
     root = npm_package(tmp_path / "root")
 
     with pytest.raises(VommitError, match="Neither `npm` nor `bun`"):
-        suggested_commands(root, LocalRunner())
+        suggested_commands(root)
 
 
 def test_suggested_commands_skips_build_by_default(tmp_path, monkeypatch):
     only_on_path(monkeypatch, tmp_path, "bun")
     root = npm_package(tmp_path / "root")
-    suggestion = suggested_commands(root, LocalRunner())
+    suggestion = suggested_commands(root)
 
     assert suggestion is not None
     assert suggestion.build == ""
@@ -562,7 +568,7 @@ def test_suggested_commands_offers_a_build_step_when_the_script_exists(
 ):
     only_on_path(monkeypatch, tmp_path, "bun")
     root = npm_package(tmp_path / "root", scripts={"build": "tsc"})
-    suggestion = suggested_commands(root, LocalRunner())
+    suggestion = suggested_commands(root)
 
     assert suggestion is not None
     assert suggestion.build == BUN_BUILD
@@ -573,7 +579,7 @@ def test_suggested_commands_offers_the_matching_build_step_without_bun(
 ):
     only_on_path(monkeypatch, tmp_path, "npm")
     root = npm_package(tmp_path / "root", scripts={"build": "tsc"})
-    suggestion = suggested_commands(root, LocalRunner())
+    suggestion = suggested_commands(root)
 
     assert suggestion is not None
     assert suggestion.build == NPM_BUILD
@@ -582,7 +588,7 @@ def test_suggested_commands_offers_the_matching_build_step_without_bun(
 def test_suggested_commands_ignores_a_blank_build_script(tmp_path, monkeypatch):
     only_on_path(monkeypatch, tmp_path, "bun")
     root = npm_package(tmp_path / "root", scripts={"build": "   "})
-    suggestion = suggested_commands(root, LocalRunner())
+    suggestion = suggested_commands(root)
 
     assert suggestion is not None
     assert suggestion.build == ""
@@ -593,7 +599,7 @@ def test_suggested_commands_leaves_clean_and_post_publish_at_their_defaults(
 ):
     only_on_path(monkeypatch, tmp_path, "bun")
     root = npm_package(tmp_path / "root", scripts={"build": "tsc"})
-    suggestion = suggested_commands(root, LocalRunner())
+    suggestion = suggested_commands(root)
 
     assert suggestion is not None
     assert suggestion.clean == "rm -rf ./dist"
@@ -658,6 +664,32 @@ def test_write_npm_auth_token_creates_a_new_file(tmp_path):
     npmrc = tmp_path / ".npmrc"
     write_npm_auth_token("abc123", npmrc)
     assert npmrc.read_text() == "//registry.npmjs.org/:_authToken=abc123\n"
+
+
+def test_write_npm_auth_token_creates_the_file_unreadable_to_others(tmp_path):
+    """
+    The line being written is a live publish credential, so the file must not
+    exist at the umask default for even an instant. npm writes it 0600 too.
+    """
+    npmrc = tmp_path / ".npmrc"
+    write_npm_auth_token("abc123", npmrc)
+
+    assert stat.S_IMODE(npmrc.stat().st_mode) == 0o600
+
+
+def test_write_npm_auth_token_leaves_an_existing_files_mode_alone(tmp_path):
+    """
+    Only a file this creates gets its mode chosen here: an `npmrc` that already
+    exists may have been widened deliberately, and this is adding a line to
+    somebody else's file.
+    """
+    npmrc = tmp_path / ".npmrc"
+    npmrc.write_text("//other.registry/:_authToken=old\n")
+    npmrc.chmod(0o644)
+
+    write_npm_auth_token("abc123", npmrc)
+
+    assert stat.S_IMODE(npmrc.stat().st_mode) == 0o644
 
 
 def test_write_npm_auth_token_appends_to_an_existing_file(tmp_path):
@@ -771,7 +803,14 @@ def test_verify_npm_token_checks_via_env_not_npmrc(tmp_path, monkeypatch):
 
     verify_npm_token("the-new-token", runner)
 
-    assert runner.env_for("bun pm whoami") == {"NPM_CONFIG_TOKEN": "the-new-token"}
+    # both spellings, because npm and bun read one each and not the same one:
+    # npm ignores NPM_CONFIG_TOKEN entirely and takes only the registry-scoped
+    # key, bun is the mirror image. Setting just one lets npm fall back to
+    # `npmrc`, so a bad token would verify against the credential already there
+    assert runner.env_for("bun pm whoami") == {
+        "NPM_CONFIG_TOKEN": "the-new-token",
+        "npm_config_//registry.npmjs.org/:_authToken": "the-new-token",
+    }
 def test_every_warning_id_is_registered(tmp_path):
     """
     `--fix` and `ignore` both check ids against the registry, so an id that is

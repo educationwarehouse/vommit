@@ -224,8 +224,11 @@ CI rather than silently skipped.
 
 Run `vommit setup` to create or complete `[tool.vommit]` interactively; use
 `vommit setup --mode=all` to revisit every setting, or
-`vommit setup --non-interactive` for defaults. For a project that does not exist
-yet, `vommit init` runs `uv init` first.
+`vommit setup --non-interactive` for defaults. The two are refused together:
+revisiting every setting is a question, and non-interactive means there is
+nobody to answer it, so the combination could only overwrite what is already
+configured. For a project that does not exist yet, `vommit init` runs
+`uv init` first.
 
 ### Where the version lives
 

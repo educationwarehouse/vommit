@@ -68,10 +68,28 @@ AUTH_PROMPT_PATTERNS: tuple[str, ...] = (
     "one-time password:",
 )
 
+#: How many recently produced bytes to match `AUTH_PROMPT_PATTERNS` against.
+#: Comfortably longer than the longest pattern, which is all it has to be: the
+#: patterns are matched as output arrives, so anything older than the last few
+#: dozen bytes has already had its chance to match.
+_MATCH_WINDOW = 256
+
 AUTH_PROMPT_MESSAGE = (
     "Aborted: this command is waiting on interactive authentication (a "
     "browser login or a one-time password), which cannot be answered here."
 )
+
+
+def _decode(raw: bytes) -> str:
+    """
+    Captured output as text, never refusing it.
+
+    Output is read to be matched against `AUTH_PROMPT_PATTERNS` and shown back
+    in an error message, so a byte that is not valid UTF-8 -- a commit subject
+    in some other encoding is the one that turns up -- should cost that one
+    character, not the whole result.
+    """
+    return raw.decode("utf-8", errors="replace")
 
 
 def _contains_auth_prompt(text: str) -> bool:
@@ -130,18 +148,29 @@ class LocalRunner:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             stdin=subprocess.DEVNULL,
-            text=True,
             env={**os.environ, **env} if env else None,
         )
 
-        stdout_chunks: list[str] = []
-        stderr_chunks: list[str] = []
+        stdout_chunks: list[bytes] = []
+        stderr_chunks: list[bytes] = []
         aborted = threading.Event()
 
-        def _drain(stream: t.IO[str], chunks: list[str]) -> None:
-            for line in iter(stream.readline, ""):
-                chunks.append(line)
-                if not aborted.is_set() and _contains_auth_prompt(line):
+        def _drain(stream: t.IO[bytes], chunks: list[bytes]) -> None:
+            # `os.read` rather than `readline`, because an auth prompt is
+            # written *without* a trailing newline (the cursor has to stay on
+            # the line it is asking on): a line-based read would block until a
+            # newline the process is never going to send, which is exactly the
+            # hang this is here to prevent. It returns whatever has arrived
+            # instead of waiting for a full buffer, so the prompt is seen as
+            # soon as it is written. `recent` carries enough context for a
+            # pattern that straddles two reads.
+            recent = b""
+            while chunk := os.read(stream.fileno(), 8192):
+                chunks.append(chunk)
+                if aborted.is_set():
+                    continue
+                recent = (recent + chunk)[-_MATCH_WINDOW:]
+                if _contains_auth_prompt(_decode(recent)):
                     aborted.set()
                     process.kill()
             stream.close()
@@ -158,8 +187,8 @@ class LocalRunner:
         for reader in readers:
             reader.join()
 
-        stdout = "".join(stdout_chunks)
-        stderr = "".join(stderr_chunks)
+        stdout = _decode(b"".join(stdout_chunks))
+        stderr = _decode(b"".join(stderr_chunks))
         if aborted.is_set():
             stderr = (
                 f"{stderr}\n{AUTH_PROMPT_MESSAGE}" if stderr else AUTH_PROMPT_MESSAGE

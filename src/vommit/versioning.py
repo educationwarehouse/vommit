@@ -19,11 +19,11 @@ DEFAULT_PRERELEASE_TOKEN: PrereleaseToken = "rc"
 PYPROJECT = "pyproject.toml"
 CARGO = "Cargo.toml"
 
-# The Cargo spelling of each PEP 440 prerelease marker. Cargo demands SemVer, so
-# `1.2.3rc1` is a parse error there; maturin reads the SemVer back out and
-# normalises it to exactly the PEP 440 form these came from, which is what keeps
-# the wheel's version equal to the one vommit tagged.
-CARGO_PRERELEASE: dict[str, str] = {"a": "alpha", "b": "beta", "rc": "rc"}
+# The SemVer spelling of each PEP 440 prerelease marker. SemVer is what both
+# Cargo and npm demand, so `1.2.3rc1` is a parse error in either; maturin reads
+# the SemVer back out and normalises it to exactly the PEP 440 form these came
+# from, which is what keeps the wheel's version equal to the one vommit tagged.
+SEMVER_PRERELEASE: dict[str, str] = {"a": "alpha", "b": "beta", "rc": "rc"}
 
 # `uv version --bump stable` drops a prerelease segment without touching the
 # release numbers: 1.1.0rc2 -> 1.1.0.
@@ -89,15 +89,20 @@ def implied_level(release: Release) -> VersionBump:
         return "major"
 
 
-def to_cargo_version(version: str) -> str:
+def to_semver(version: str, manifest: str = CARGO) -> str:
     """
-    `version` as SemVer, for a `Cargo.toml` that has to hold it.
+    `version` as plain SemVer, for a manifest that has to hold it.
+
+    `Cargo.toml` and `package.json` want the same thing here: PEP 440 in, SemVer
+    out, with `1.2.3rc1` spelled `1.2.3-rc.1` either way. `manifest` only names
+    the file in the error messages, so the caller's own filename is what a
+    refusal points at.
 
     Only the shapes vommit itself produces convert: a release, optionally with
     an alpha/beta/rc prerelease. Post, dev, epoch and local segments have no
-    SemVer spelling that maturin would read back as the same version, and a
-    `--version` flag can ask for any of them, so they are refused here (before
-    anything is written) rather than silently published under another number.
+    SemVer spelling that would read back as the same version, and a `--version`
+    flag can ask for any of them, so they are refused here (before anything is
+    written) rather than silently published under another number.
     """
     parsed = parse_version(version)
     if parsed is None:
@@ -115,27 +120,27 @@ def to_cargo_version(version: str) -> str:
     ]
     if unsupported:
         raise VommitError(
-            f"{version} has {' and '.join(unsupported)}, which Cargo cannot "
-            f"express; give {CARGO} a version made of a release and at most an "
-            "alpha, beta or rc prerelease."
+            f"{version} has {' and '.join(unsupported)}, which SemVer cannot "
+            f"express; give {manifest} a version made of a release and at most "
+            "an alpha, beta or rc prerelease."
         )
 
     major, minor, patch = release_of(parsed)
-    cargo = f"{major}.{minor}.{patch}"
+    semver = f"{major}.{minor}.{patch}"
     if parsed.pre:
         label, number = parsed.pre
-        cargo = f"{cargo}-{CARGO_PRERELEASE[label]}.{number}"
+        semver = f"{semver}-{SEMVER_PRERELEASE[label]}.{number}"
 
     # the conversion is only worth anything if it survives the trip back: the
     # wheel maturin builds is named after what *it* makes of this string.
     # compared as versions rather than as text, because padding `1.2` out to the
     # three components SemVer insists on is not a change of version.
-    if Version(cargo) != parsed:  # pragma: no cover - backstop, not a path
+    if Version(semver) != parsed:  # pragma: no cover - backstop, not a path
         raise VommitError(
-            f"{version} would be written to {CARGO} as {cargo}, which reads "
-            f"back as {Version(cargo)}; refusing to change the version."
+            f"{version} would be written to {manifest} as {semver}, which reads "
+            f"back as {Version(semver)}; refusing to change the version."
         )
-    return cargo
+    return semver
 
 
 def _series_covers(claimed: Release, level: VersionBump, baseline: str | None) -> bool:
@@ -203,16 +208,21 @@ class VersionSource:
 
     #: The file holding the version, relative to `root`.
     manifest_name: t.ClassVar[str]
-    #: The lockfile that records it a second time, relative to `root`.
-    lockfile_name: t.ClassVar[str]
+    #: The lockfile that records it a second time, relative to `root`, or None
+    #: for a backend that does not manage one (see `NpmProject`). Optional
+    #: rather than a filename that is never written: every caller that reaches
+    #: for a lockfile has to handle its absence anyway, and saying so in the
+    #: type is what stops `undo` and `bump` from disagreeing about whether one
+    #: exists.
+    lockfile_name: t.ClassVar[str | None]
 
     @property
     def manifest(self) -> Path:
         return self.root / self.manifest_name
 
     @property
-    def lockfile(self) -> Path:
-        return self.root / self.lockfile_name
+    def lockfile(self) -> Path | None:
+        return self.root / self.lockfile_name if self.lockfile_name else None
 
     def current_version(self) -> str | None:
         """
@@ -305,7 +315,7 @@ class UvProject(VersionSource):
     """
 
     manifest_name: t.ClassVar[str] = PYPROJECT
-    lockfile_name: t.ClassVar[str] = "uv.lock"
+    lockfile_name: t.ClassVar[str | None] = "uv.lock"
 
     def version_in(self, manifest: str) -> str | None:
         project = tomlkit.parse(manifest).get("project")
@@ -332,41 +342,35 @@ class UvProject(VersionSource):
 
 
 @dc.dataclass(frozen=True)
-class CargoProject(VersionSource):
+class SemVerProject(VersionSource):
     """
-    A project whose version is `[package].version` in `Cargo.toml`.
+    A project whose manifest holds plain SemVer rather than PEP 440.
 
-    maturin builds the wheel from the crate and takes its version from there, so
-    `pyproject.toml` says `dynamic = ["version"]` and has nothing for
-    `uv version` to bump; uv refuses the project outright. The arithmetic is
-    still uv's: it runs against a throwaway manifest holding nothing but the
-    current version, and the answer is written back as SemVer.
+    The arithmetic is still uv's, because that is what keeps every backend
+    landing on the same version from the same commits: uv runs against a
+    throwaway `pyproject.toml` holding nothing but the current version, and
+    whatever it computes is converted back with `to_semver` before it is
+    written. Nothing in that is specific to one manifest format, so a subclass
+    supplies only the three things that are: how to read a version out
+    (`version_in`), how to write one back (`_write_version`), and what to say
+    when there is none to read (`missing_version`).
     """
 
-    manifest_name: t.ClassVar[str] = CARGO
-    lockfile_name: t.ClassVar[str] = "Cargo.lock"
-    #: maturin's `[tool.maturin].manifest-path`, when the crate is not at root.
-    manifest_path: Path | None = None
+    #: Where the version lives, for the error when the manifest states none.
+    #: Spelled per-format because `[package].version` and `.version` are the
+    #: same sentence in two languages.
+    missing_version: t.ClassVar[str]
 
-    @property
-    def manifest(self) -> Path:
-        return self.manifest_path or super().manifest
+    def _write_version(self, semver: str) -> None:
+        """
+        Put `semver` in the manifest, leaving everything else as it was found.
+        """
+        raise NotImplementedError  # pragma: no cover
 
-    @property
-    def lockfile(self) -> Path:
-        if self.manifest_path is None:
-            return super().lockfile
-        else:
-            return self.manifest_path.parent / self.lockfile_name
-
-    def version_in(self, manifest: str) -> str | None:
-        package = tomlkit.parse(manifest).get("package")
-        version = package.get("version") if isinstance(package, dict) else None
-        # Cargo's spelling of a prerelease is a legal PEP 440 one, so parsing is
-        # also the conversion: `1.2.3-rc.1` reads back as `1.2.3rc1`, which is
-        # the version maturin will put on the wheel.
-        parsed = parse_version(str(version)) if version is not None else None
-        return str(parsed) if parsed else None
+    def _after_write(self, frozen: bool) -> None:
+        """
+        Whatever else a write implies; nothing, for a backend with no lockfile.
+        """
 
     def preview(self, args: list[str]) -> str:
         current = self._require_current()
@@ -381,19 +385,10 @@ class CargoProject(VersionSource):
 
     def apply(self, args: list[str], frozen: bool = False) -> str:
         version = self.preview(args)
-        # converted before the write, so a version Cargo cannot hold stops the
-        # bump instead of landing half-applied
-        cargo_version = to_cargo_version(version)
-
-        document = tomlkit.parse(self.manifest.read_text())
-        package = document.get("package")
-        if not isinstance(package, dict):
-            raise VommitError(f"[package] must be a TOML table in {CARGO}.")
-        package["version"] = cargo_version
-        self.manifest.write_text(tomlkit.dumps(document))
-
-        if not frozen:
-            self._relock()
+        # converted before the write, so a version the manifest cannot hold
+        # stops the bump instead of landing half-applied
+        self._write_version(to_semver(version, self.manifest_name))
+        self._after_write(frozen)
         return version
 
     def _require_current(self) -> str:
@@ -401,9 +396,61 @@ class CargoProject(VersionSource):
         if current:
             return current
         raise VommitError(
-            f"No `[package].version` in {relative_path(self.manifest, self.root)}, "
-            "so there is no version to bump."
+            f"No `{self.missing_version}` in "
+            f"{relative_path(self.manifest, self.root)}, so there is no version "
+            "to bump."
         )
+
+
+@dc.dataclass(frozen=True)
+class CargoProject(SemVerProject):
+    """
+    A project whose version is `[package].version` in `Cargo.toml`.
+
+    maturin builds the wheel from the crate and takes its version from there, so
+    `pyproject.toml` says `dynamic = ["version"]` and has nothing for
+    `uv version` to bump; uv refuses the project outright.
+    """
+
+    manifest_name: t.ClassVar[str] = CARGO
+    lockfile_name: t.ClassVar[str | None] = "Cargo.lock"
+    missing_version: t.ClassVar[str] = "[package].version"
+    #: maturin's `[tool.maturin].manifest-path`, when the crate is not at root.
+    manifest_path: Path | None = None
+
+    @property
+    def manifest(self) -> Path:
+        return self.manifest_path or super().manifest
+
+    @property
+    def lockfile(self) -> Path:
+        if self.manifest_path is None:
+            # the base returns None only for a backend with no lockfile_name,
+            # and this class has one
+            return t.cast(Path, super().lockfile)
+        else:
+            return self.manifest_path.parent / t.cast(str, self.lockfile_name)
+
+    def version_in(self, manifest: str) -> str | None:
+        package = tomlkit.parse(manifest).get("package")
+        version = package.get("version") if isinstance(package, dict) else None
+        # Cargo's spelling of a prerelease is a legal PEP 440 one, so parsing is
+        # also the conversion: `1.2.3-rc.1` reads back as `1.2.3rc1`, which is
+        # the version maturin will put on the wheel.
+        parsed = parse_version(str(version)) if version is not None else None
+        return str(parsed) if parsed else None
+
+    def _write_version(self, semver: str) -> None:
+        document = tomlkit.parse(self.manifest.read_text())
+        package = document.get("package")
+        if not isinstance(package, dict):
+            raise VommitError(f"[package] must be a TOML table in {CARGO}.")
+        package["version"] = semver
+        self.manifest.write_text(tomlkit.dumps(document))
+
+    def _after_write(self, frozen: bool) -> None:
+        if not frozen:
+            self._relock()
 
     def _relock(self) -> None:
         """
@@ -434,81 +481,96 @@ class CargoProject(VersionSource):
 
 NPM = "package.json"
 
+#: How `json.dump` spells the indentation `package.json` was already using,
+#: when the file gives nothing to go on (a one-line manifest, say). npm's own
+#: default, so a file this creates the shape of looks like one npm wrote.
+DEFAULT_JSON_INDENT = 2
+
 
 @dc.dataclass(frozen=True)
-class NpmProject(VersionSource):
+class NpmProject(SemVerProject):
     """
     A project whose version is `.version` in `package.json`.
 
-    npm's version field is plain SemVer, the same target format Cargo needs
-    for `Cargo.toml`, so the arithmetic is borrowed the same way `CargoProject`
-    borrows it: run against a throwaway `pyproject.toml` holding nothing but
-    the current version, then convert whatever uv computes back with
-    `to_cargo_version`. That conversion has nothing Cargo-specific in it
-    despite the name: PEP 440 -> plain SemVer is exactly what npm's version
-    field also requires, and the two ecosystems' prerelease spelling
-    (`-beta.1`) is identical.
+    npm's version field is plain SemVer, the same target format Cargo needs, so
+    the arithmetic is the shared one in `SemVerProject`: PEP 440 -> SemVer is
+    exactly what npm's version field also requires, and the two ecosystems'
+    prerelease spelling (`-beta.1`) is identical.
 
     Deliberately does not relock a lockfile: npm, pnpm, yarn and bun each keep
     a different one (and disagree on shape), and a lockfile a bump left stale
     is no different from one any other manual edit to `package.json` left
-    stale; the next install fixes it. `lockfile` always reports as absent so
-    a stale one is never staged into the release commit either.
+    stale; the next install fixes it. `lockfile_name` is None so that nothing
+    downstream stages, unstages or relocks a file this class never wrote.
     """
 
     manifest_name: t.ClassVar[str] = NPM
-    lockfile_name: t.ClassVar[str] = "package-lock.json"
-
-    @property
-    def lockfile(self) -> Path:
-        # See class docstring: never relocked, so `bump.py`'s
-        # `project.lockfile.exists()` check must never see one either, or a
-        # stale lockfile would get staged into the release commit unchanged.
-        return self.root / ".vommit-npm-project-has-no-managed-lockfile"
+    lockfile_name: t.ClassVar[str | None] = None
+    missing_version: t.ClassVar[str] = ".version"
 
     def version_in(self, manifest: str) -> str | None:
+        version = self._declared_version(manifest)
+        parsed = parse_version(version) if version is not None else None
+        return str(parsed) if parsed else None
+
+    def unsupported_version(self) -> str | None:
+        """
+        The manifest's `.version` when it is a version npm accepts but this
+        cannot bump, and None in every other case (including no version at all).
+
+        SemVer allows prerelease identifiers PEP 440 has no reading for
+        (`1.0.0-alpha.beta`, `1.0.0-x.7.z.92`), and `version_in` can only answer
+        None for those, which is the same answer it gives for a manifest with no
+        version in it. The two want different messages -- one is "this is not an
+        npm project", the other is "it is, and here is the version in the way"
+        -- so the distinction is drawn here rather than guessed at by the
+        caller.
+        """
+        if not self.manifest.exists():
+            return None
+        version = self._declared_version(self.manifest.read_text())
+        if version is None or parse_version(version):
+            return None
+        return version
+
+    def _declared_version(self, manifest: str) -> str | None:
         try:
             data = json.loads(manifest)
         except json.JSONDecodeError:
             return None
-        version = data.get("version") if isinstance(data, dict) else None
-        parsed = parse_version(str(version)) if version is not None else None
-        return str(parsed) if parsed else None
+        if not isinstance(data, dict):
+            return None
+        version = data.get("version")
+        return str(version) if version is not None else None
 
-    def preview(self, args: list[str]) -> str:
-        current = self._require_current()
-        with tempfile.TemporaryDirectory() as scratch:
-            probe = Path(scratch)
-            (probe / PYPROJECT).write_text(
-                f'[project]\nname = "vommit-version-probe"\nversion = "{current}"\n'
-            )
-            # no lockfile to keep in step and nothing to sync: the probe
-            # exists only to be read back out
-            return self._uv_version(probe, args, ["--dry-run", "--frozen"])
-
-    def apply(self, args: list[str], frozen: bool = False) -> str:
-        # `frozen` governs lockfile relocking on `CargoProject`/`UvProject`;
-        # this class never relocks one at all (see class docstring), so the
-        # flag has nothing to act on here. It is accepted only to satisfy the
-        # shared `VersionSource.apply` signature every caller uses uniformly.
-        version = self.preview(args)
-        npm_version = to_cargo_version(version)
-
-        document = json.loads(self.manifest.read_text())
+    def _write_version(self, semver: str) -> None:
+        # read as text first: the version is one field, and rewriting the file
+        # in this module's own idea of formatting would put the whole manifest
+        # in the release commit's diff. npm's own `npm version` preserves both
+        # of these for the same reason.
+        raw = self.manifest.read_text()
+        document = json.loads(raw)
         if not isinstance(document, dict):
             raise VommitError(f"{NPM} must contain a JSON object.")
-        document["version"] = npm_version
-        self.manifest.write_text(json.dumps(document, indent=2) + "\n")
-        return version
+        document["version"] = semver
+        text = json.dumps(document, indent=_json_indent(raw))
+        self.manifest.write_text(text + "\n" if raw.endswith("\n") else text)
 
-    def _require_current(self) -> str:
-        current = self.current_version()
-        if current:
-            return current
-        raise VommitError(
-            f"No `.version` in {relative_path(self.manifest, self.root)}, "
-            "so there is no version to bump."
-        )
+
+def _json_indent(raw: str) -> int | str:
+    """
+    The indentation `raw` uses, in the form `json.dumps` takes it.
+
+    Read off the first indented line rather than parsed, because that is the
+    only place the information survives: `json.loads` throws formatting away.
+    Tabs come back as the string `json.dumps` wants for them; a file with
+    nothing indented gets the default rather than a guess.
+    """
+    for line in raw.splitlines()[1:]:
+        stripped = line.lstrip(" \t")
+        if stripped and stripped != line:
+            return line[: len(line) - len(stripped)]
+    return DEFAULT_JSON_INDENT
 
 
 def version_source(runner: Runner, root: Path) -> VersionSource:
@@ -541,6 +603,16 @@ def version_source(runner: Runner, root: Path) -> VersionSource:
     npm_project = NpmProject(runner=runner, root=root)
     if npm_project.current_version() is not None:
         return npm_project
+    if unsupported := npm_project.unsupported_version():
+        # falling through here would report "no version in pyproject.toml",
+        # naming the wrong file for a project that plainly states a version;
+        # say which version is in the way instead
+        raise VommitError(
+            f"{relative_path(npm_project.manifest, root)} is at "
+            f"{unsupported!r}, which vommit cannot bump: it releases versions "
+            "made of a release number and at most an alpha, beta or rc "
+            "prerelease."
+        )
 
     return uv_project
 

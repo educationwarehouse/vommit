@@ -197,3 +197,48 @@ def test_context_runner_reraises_an_unrelated_thread_exception():
 
     with pytest.raises(ThreadException):
         ContextRunner(ExplodingContext(FakeInvokeResult(0, "", ""))).run("echo hi")
+
+
+def test_local_runner_catches_a_prompt_with_no_trailing_newline():
+    """
+    Regression: the drain used to read whole lines, so it could only ever see a
+    pattern that arrived with a newline after it. A prompt is written *without*
+    one, because the cursor has to stay on the line it is asking on, which made
+    the two one-time-password patterns unreachable in exactly the situation
+    they exist for. `printf` with no `\\n` reproduces it.
+    """
+    start = time.monotonic()
+    result = LocalRunner().run(shell("printf 'Enter one-time password:'; sleep 30"))
+    elapsed = time.monotonic() - start
+
+    assert elapsed < 5, f"took {elapsed:.1f}s, the sleep was not interrupted"
+    assert result.ok is False
+    assert "interactive authentication" in result.stderr
+
+
+def test_local_runner_catches_a_prompt_split_across_reads():
+    """
+    Output arrives in whatever sized pieces the process writes it, so a pattern
+    can straddle two of them. The matcher keeps a window of recent bytes rather
+    than testing each piece on its own.
+    """
+    result = LocalRunner().run(
+        shell("printf 'Enter one-'; sleep 0.2; printf 'time password:'; sleep 30")
+    )
+
+    assert result.ok is False
+    assert "interactive authentication" in result.stderr
+
+
+def test_local_runner_survives_output_that_is_not_utf_8():
+    """
+    Regression: decoding used to happen in the reader thread under the strict
+    codec, so one undecodable byte (a commit subject in some other encoding is
+    the realistic source) killed the thread and silently truncated the result
+    instead of raising anywhere visible.
+    """
+    result = LocalRunner().run(shell("printf 'caf\\351 x'"))
+
+    assert result.ok is True
+    assert result.out.startswith("caf")
+    assert result.out.endswith("x")

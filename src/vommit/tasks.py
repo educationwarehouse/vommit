@@ -85,7 +85,7 @@ from .scaffold import (
 )
 from .shell import ContextRunner
 from .undo import UndoPlan, UndoResult, run_undo
-from .versioning import CargoProject, NpmProject, version_source
+from .versioning import CargoProject, NpmProject, VersionSource, version_source
 
 SetupMode = t.Literal["missing", "all"]
 MigrateChoice = t.Literal["interactive", "copy", "stop"]
@@ -453,9 +453,26 @@ def setup(
         # inside the report: a misspelled id is a VommitError, and the flag is
         # worth rejecting before anything is written rather than after
         autofix = requested_fixes(fix)
+        if mode == "all" and non_interactive:
+            # `--mode=all` means "revisit every setting", which is a question,
+            # and `--non-interactive` means there is nobody to answer one. Left
+            # to run, the combination silently overwrites configured values
+            # with whatever vommit would suggest today, which is the one
+            # outcome neither flag asks for.
+            raise VommitError(
+                "--mode=all revisits every setting, which needs someone to "
+                "answer for them; it cannot be combined with "
+                "--non-interactive. Drop one of the two, or pass --fix to "
+                "make the build-warning changes unattended."
+            )
 
         if _offers_migration(pyproject, non_interactive):
             return migrate(c, project_dir=project_dir)
+
+        runner = ContextRunner(c)
+        # resolved once and passed down: every `version_source` call can shell
+        # out to `uv version`, and setup asks the same question five times over
+        project = version_source(runner, root)
 
         config = Config.from_pyproject(root)
         configured = Config.has_pyproject_config(pyproject)
@@ -466,7 +483,7 @@ def setup(
         )
         # applies regardless of interactivity: a non-interactive setup gets no
         # prompt to override a bad default, so it needs the right one even more
-        _suggest_npm_defaults(config, present_paths, root, ContextRunner(c))
+        _suggest_npm_defaults(config, present_paths, root, project)
 
         if not non_interactive:
             if mode == "missing" and Config.is_complete(pyproject):
@@ -482,13 +499,15 @@ def setup(
         # a crate-backed project keeps `dynamic = ["version"]` on purpose, so the
         # offer below, which exists to make [project].version bumpable, has
         # nothing to fix and would report the deliberate shape as a problem
-        if _report_version_source(c, root):
+        if _report_version_source(project):
             _offer_version_files(root, pyproject, non_interactive)
         _report_build(root, pyproject, config, non_interactive, autofix)
-        _offer_npm_token(root, ContextRunner(c), non_interactive)
+        _offer_npm_token(project, runner, non_interactive)
 
 
-def _offer_npm_token(root: Path, runner: ContextRunner, non_interactive: bool) -> None:
+def _offer_npm_token(
+    project: VersionSource, runner: ContextRunner, non_interactive: bool
+) -> None:
     """
     Nudges toward a non-interactive npm/bun publish credential (see
     `npm_token_instructions`), for a project whose version lives in
@@ -499,7 +518,7 @@ def _offer_npm_token(root: Path, runner: ContextRunner, non_interactive: bool) -
     `~/.npmrc` on the spot, so `setup` and a first release both happen in one
     sitting rather than a release failing on this days later.
     """
-    if not isinstance(version_source(runner, root), NpmProject):
+    if not isinstance(project, NpmProject):
         return
     if has_npm_auth_token():
         return
@@ -519,6 +538,10 @@ def _offer_npm_token(root: Path, runner: ContextRunner, non_interactive: bool) -
         rich.print("[yellow]No token entered; nothing written.[/yellow]")
         return
 
+    # checked before it is written, the same way `authenticate` does it: this
+    # is where a token is most likely to be mistyped, and the longest wait
+    # before anything would notice (the first release, days later)
+    verify_npm_token(token, runner)
     write_npm_auth_token(token)
     rich.print(f"[green]Wrote a publish token to {NPMRC}.[/green]")
 
@@ -527,7 +550,7 @@ def _suggest_npm_defaults(
     config: Config,
     present_paths: set[str] | None,
     root: Path,
-    runner: ContextRunner,
+    project: VersionSource,
 ) -> None:
     """
     Swap in npm-flavored suggested defaults for whichever of `commands.build`,
@@ -544,23 +567,24 @@ def _suggest_npm_defaults(
     can default to what it always should have meant here: there is no PyPI
     credential to resolve, because there is no PyPI.
     """
+    if not isinstance(project, NpmProject):
+        return
+
     if config.commands is not None:
-        suggested = suggested_commands(root, runner)
+        suggested = suggested_commands(root)
         if suggested is not None:
             if present_paths is None or "commands.build" not in present_paths:
                 config.commands.build = suggested.build
             if present_paths is None or "commands.publish" not in present_paths:
                 config.commands.publish = suggested.publish
 
-    if (
-        config.pypi is not None
-        and isinstance(version_source(runner, root), NpmProject)
-        and (present_paths is None or "pypi.enabled" not in present_paths)
+    if config.pypi is not None and (
+        present_paths is None or "pypi.enabled" not in present_paths
     ):
         config.pypi.enabled = False
 
 
-def _report_version_source(c: Context, root: Path) -> bool:
+def _report_version_source(source: VersionSource) -> bool:
     """
     Whether the version is `[project].version`, saying so when it is not.
 
@@ -568,7 +592,6 @@ def _report_version_source(c: Context, root: Path) -> bool:
     pyproject.toml, and a bump that edits a different file is a surprise the
     first time it happens.
     """
-    source = version_source(ContextRunner(c), root)
     if not isinstance(source, CargoProject):
         return True
     rich.print(
@@ -1076,8 +1099,9 @@ def _authenticate_npm(runner: ContextRunner, no_verify: bool, clear: bool) -> No
 def _ask_npm_token(replacing: bool) -> str:
     if not sys.stdin.isatty():
         raise VommitError(
-            "No npm/bun token found and no terminal to ask on; set "
-            "NPM_CONFIG_TOKEN in the environment, or run `vommit authenticate`."
+            f"No npm/bun token found and no terminal to ask on; put an "
+            f"`_authToken` line in {NPMRC} yourself, or run `vommit "
+            "authenticate` where there is one."
         )
     rich.print(f"[blue]{npm_token_advice()}[/blue]")
     lead = "Replace the stored npm/bun token" if replacing else "npm/bun token"
@@ -1097,6 +1121,10 @@ def ensure_authenticated(_: Context, show: bool = False) -> None:
     as a `pre` task; `release` calls the same resolution in-process, so
     that a `--noop` run is not stopped for a credential it will never use.
     Pass --show to see which one that is and where it came from.
+
+    The npm side only looks at ~/.npmrc. A project-local `.npmrc` or a token
+    in the environment publishes perfectly well without one, so a project
+    authenticating either of those ways should not make this a `pre` task.
     """
     runner = ContextRunner(_)
     root = Path.cwd()
@@ -1105,8 +1133,7 @@ def ensure_authenticated(_: Context, show: bool = False) -> None:
             if not has_npm_auth_token():
                 raise VommitError(
                     f"No npm/bun token found in {NPMRC}; run `vommit "
-                    "authenticate` to store one, or set NPM_CONFIG_TOKEN in "
-                    "the environment."
+                    "authenticate` to store one."
                 )
             if show:
                 rich.print(f"[green]npm/bun token[/green] configured in {NPMRC}.")

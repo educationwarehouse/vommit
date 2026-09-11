@@ -268,7 +268,13 @@ def run_bump(
     if answer == "no":
         return dc.replace(result, noop=True, cancelled=True)
 
-    lockfile_ignored = bool(git and repo.ignores(project.lockfile_name))
+    # a backend with no lockfile of its own has nothing to relock and nothing
+    # to stage, which is the same thing `frozen` asks for
+    lockfile_ignored = (
+        bool(git and repo.ignores(project.lockfile_name))
+        if project.lockfile_name
+        else True
+    )
     applied = project.apply(plan, frozen=lockfile_ignored)
     if applied != next_version:
         raise VommitError(
@@ -280,8 +286,9 @@ def run_bump(
         update.apply()
 
     if git:
-        if project.lockfile.exists() and not lockfile_ignored:
-            touched.append(project.lockfile_name)
+        lockfile = project.lockfile
+        if lockfile and lockfile.exists() and not lockfile_ignored:
+            touched.append(t.cast(str, project.lockfile_name))
         try:
             repo.add(touched)
         except VommitError as error:

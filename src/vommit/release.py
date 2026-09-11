@@ -173,12 +173,17 @@ def run_release(
     # credentials are resolved before the first write, for the same reason bump
     # checks the tag before creating the commit: discovering afterwards that
     # there is no token would leave a pushed release with nothing on PyPI.
-    # Gated on `pypi` specifically, not just "is something being published":
-    # an npm publish authenticates through its own `.npmrc`, not a token
-    # vommit resolves and injects, so asking for a PyPI one here would ask
-    # for a credential that release will never use.
+    # Gated on the project, not just on `pypi`: an npm publish authenticates
+    # through its own `.npmrc`, not a token vommit resolves and injects, so
+    # asking for a PyPI one here would ask for a credential the release will
+    # never use. `pypi.enabled` is not enough on its own to tell that -- it
+    # defaults to true, so every npm project configured before vommit knew
+    # what one was still has it set.
     publishing = any(step.name == PUBLISH for step in steps)
-    token = authenticate() if pypi and publishing and not request.noop else None
+    needs_pypi_token = bool(pypi) and not isinstance(project, NpmProject)
+    token = (
+        authenticate() if needs_pypi_token and publishing and not request.noop else None
+    )
 
     bumped = None
     if request.no_bump:
