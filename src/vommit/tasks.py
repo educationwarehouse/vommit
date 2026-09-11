@@ -26,6 +26,8 @@ from .auth import (
     verify_token,
 )
 from .build import (
+    FIX_ALL,
+    FIXABLE_WARNING_IDS,
     NPMRC,
     ProjectWarning,
     clear_npm_auth_token,
@@ -33,6 +35,7 @@ from .build import (
     npm_token_advice,
     npm_token_instructions,
     project_warnings,
+    requested_fixes,
     suggested_commands,
     verify_npm_token,
     write_npm_auth_token,
@@ -411,13 +414,27 @@ def _report_scaffold(result: ScaffoldResult) -> None:
         rich.print("[blue]Nothing was pushed yet.[/blue]")
 
 
-@task(hookable=False)
+@task(
+    hookable=False,
+    help={
+        "non-interactive": "Take every answer from the flags and defaults.",
+        "project-dir": "Project to configure (default: the current directory).",
+        "mode": "'missing' asks only about unset settings; 'all' revisits every one.",
+        "branch": "Release branch, when it should not come from the remote.",
+        "fix": (
+            "Apply the named build warnings' fixes without asking, comma "
+            f"separated, or '{FIX_ALL}' for every one that has a fix. "
+            f"Fixable: {', '.join(sorted(FIXABLE_WARNING_IDS))}."
+        ),
+    },
+)
 def setup(
     c: Context,
     non_interactive: bool = False,
     project_dir: str | None = None,
     mode: SetupMode = "missing",
     branch: str | None = None,
+    fix: str | None = None,
 ) -> None:
     """
     Create or complete the vommit config in this project's pyproject.toml.
@@ -425,12 +442,18 @@ def setup(
     Hands over to `migrate` when it finds a python-semantic-release v7 config
     and nothing of vommit's own. `--mode=all` revisits every setting rather than
     only the missing ones. `--branch` supplies the release branch that would
-    otherwise be derived from the remote or the checkout.
+    otherwise be derived from the remote or the checkout. `--fix` applies build
+    warnings' fixes without asking, which is how a non-interactive run makes
+    them at all.
     """
     root = _project_root(project_dir)
     pyproject = root / "pyproject.toml"
 
     with _reported():
+        # inside the report: a misspelled id is a VommitError, and the flag is
+        # worth rejecting before anything is written rather than after
+        autofix = requested_fixes(fix)
+
         if _offers_migration(pyproject, non_interactive):
             return migrate(c, project_dir=project_dir)
 
@@ -461,7 +484,7 @@ def setup(
         # nothing to fix and would report the deliberate shape as a problem
         if _report_version_source(c, root):
             _offer_version_files(root, pyproject, non_interactive)
-        _report_build(root, pyproject, config, non_interactive)
+        _report_build(root, pyproject, config, non_interactive, autofix)
         _offer_npm_token(root, ContextRunner(c), non_interactive)
 
 
@@ -561,6 +584,7 @@ def _report_build(
     pyproject: Path,
     config: Config,
     non_interactive: bool,
+    autofix: set[str],
 ) -> None:
     """
     Say what would go wrong at build time, while nothing has been released yet,
@@ -569,14 +593,40 @@ def _report_build(
     The ignore key is offered second and only when the fix was declined (or
     there is none to offer): silencing a warning someone would have fixed in
     one keystroke is the worse of the two outcomes.
+
+    An id in `autofix` skips both questions and writes the change. The warning
+    is still printed: a run that edited the project should say what it edited,
+    and an id asked for that turns out to have no fix has to say that too.
     """
     for warning in project_warnings(root, config):
         rich.print(f"[yellow]{escape(warning.message)}[/yellow]")
+        if warning.id in autofix:
+            _apply_fix(warning)
+            continue
         if non_interactive:
             continue
         if _offer_fix(warning):
             continue
         _offer_ignore(warning, config, pyproject)
+
+
+def _apply_fix(warning: ProjectWarning) -> None:
+    """
+    Take a `--fix` id at its word, or say why the id had nothing to write.
+
+    A fixable id still arrives without a `fix` when the project's shape blocks
+    the change: Hatchling with a `[tool.hatch.build]` table, or a `hatch build`
+    that does more than build. The warning above already named the blocker, so
+    this only has to say that nothing was written.
+    """
+    if not (fix := warning.fix):
+        rich.print(
+            f'[yellow]Nothing applied for "{escape(warning.id)}": '
+            "this project's fix is not mechanical, see above.[/yellow]"
+        )
+        return
+    fix.apply()
+    rich.print(f"[green]{escape(fix.done)}[/green]")
 
 
 def _offer_fix(warning: ProjectWarning) -> bool:

@@ -69,6 +69,61 @@ RECOMMENDED_UV_BUILD_REQUIREMENT = (
 HATCH_BUILD_COMMANDS = {"hatch build", "hatch build -c", "hatch build --clean"}
 HATCH_PUBLISH_COMMANDS = {"hatch publish"}
 
+#: Every id a warning here can carry. What `ignore` silences and what `setup
+#: --fix` names; kept in one place so both can say which ids exist rather than
+#: accepting a typo as a request nothing matches.
+WARNING_IDS = frozenset(
+    (
+        "hatchling-backend",
+        "uv-build-pin",
+        "hatch-build-command",
+        "maturin-uv-build",
+        "uv-build-module-missing",
+    )
+)
+
+#: The subset carrying a `fix`, where the project's shape allows it. The other
+#: ids describe something with no mechanical answer, so `--fix` cannot promise
+#: them anything.
+FIXABLE_WARNING_IDS = frozenset(
+    ("hatchling-backend", "uv-build-pin", "hatch-build-command")
+)
+
+#: `--fix` shorthand for every id in `FIXABLE_WARNING_IDS`.
+FIX_ALL = "all"
+
+
+def requested_fixes(fix: str | None) -> set[str]:
+    """
+    The warning ids a `--fix` flag asked for, refusing anything that is not one.
+
+    A typo is an error rather than a silent no-op: the flag exists so that an
+    unattended run changes something, and a run that changed nothing because of
+    a misspelling looks exactly like a project with nothing to fix. An id that
+    is real but carries no fix is refused for the same reason.
+    """
+    if fix is None:
+        return set()
+
+    asked = {part.strip() for part in fix.split(",") if part.strip()}
+    if not asked:
+        raise VommitError(f"--fix needs a warning id, or '{FIX_ALL}'.")
+    if FIX_ALL in asked:
+        return set(FIXABLE_WARNING_IDS)
+
+    if unknown := sorted(asked - WARNING_IDS):
+        raise VommitError(
+            f"Not a build warning: {', '.join(unknown)}. "
+            f"Fixable ids are {', '.join(sorted(FIXABLE_WARNING_IDS))}."
+        )
+    if unfixable := sorted(asked - FIXABLE_WARNING_IDS):
+        raise VommitError(
+            f"No fix to apply for {', '.join(unfixable)}: the warning names what "
+            "is in the way instead of offering a change. "
+            f"Fixable ids are {', '.join(sorted(FIXABLE_WARNING_IDS))}."
+        )
+    return asked
+
 
 @dc.dataclass(frozen=True)
 class Fix:

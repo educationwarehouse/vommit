@@ -295,6 +295,26 @@ for this project.
 ignore = ["hatchling-backend", "uv-build-pin"]
 ```
 
+`--fix` applies those changes without asking, which is the only way a
+`--non-interactive` run makes them: on its own that mode prints the warnings
+and writes nothing.
+
+```bash
+vommit setup --non-interactive --fix=hatchling-backend,hatch-build-command
+vommit setup --fix=all   # every warning that has a fix
+```
+
+Three ids can carry a fix: `hatchling-backend`, `uv-build-pin` and
+`hatch-build-command`. Anything else fails the run, so a misspelled id is an
+error rather than a flag that quietly fixes nothing. An id whose fix is
+blocked by the project's shape (a `[tool.hatch.build]` table, a `hatch build`
+that does more than build) is not an error; the warning names the blocker and
+the run says nothing was written.
+
+`release` never applies a fix. It reports the same warnings before the bump and
+carries on, because a release is the wrong moment to be changing the build
+configuration it is about to run.
+
 The most useful settings to revisit are:
 
 | Setting                                                                         | Purpose                                                                                                                               |
