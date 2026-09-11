@@ -20,10 +20,12 @@ from src.vommit.scaffold import (
     initial_commit_message,
     wanted_ignores,
     REQUIRED_IGNORES,
+    UV_LOCK,
     Defaults,
     ScaffoldRequest,
     default_python,
     ensure_gitignore,
+    ensure_uv_lock_ignored,
     ignore,
     plan_request,
     run_scaffold,
@@ -551,6 +553,40 @@ def test_ensure_gitignore_changes_nothing_when_everything_is_there(tmp_path):
 
     assert ensure_gitignore(root) == []
     assert (root / GITIGNORE).read_text() == FALLBACK_GITIGNORE
+
+
+def test_ensure_uv_lock_ignored_does_nothing_without_a_gitignore(tmp_path):
+    """
+    Setup does not choose a project's ignore policy; it only tops one up.
+    """
+    root = project(tmp_path / "mypkg")
+
+    assert ensure_uv_lock_ignored(root) is False
+    assert not (root / GITIGNORE).exists()
+
+
+def test_ensure_uv_lock_ignored_adds_the_missing_line(tmp_path):
+    root = project(tmp_path / "mypkg")
+    (root / GITIGNORE).write_text("dist/\n")
+
+    assert ensure_uv_lock_ignored(root) is True
+    assert (root / GITIGNORE).read_text() == f"dist/\n{UV_LOCK}\n"
+
+
+def test_ensure_uv_lock_ignored_adds_a_newline_before_appending(tmp_path):
+    root = project(tmp_path / "mypkg")
+    (root / GITIGNORE).write_text("dist/")
+
+    assert ensure_uv_lock_ignored(root) is True
+    assert (root / GITIGNORE).read_text() == f"dist/\n{UV_LOCK}\n"
+
+
+def test_ensure_uv_lock_ignored_reports_when_already_present(tmp_path):
+    root = project(tmp_path / "mypkg")
+    (root / GITIGNORE).write_text(f"dist/\n{UV_LOCK}\n")
+
+    assert ensure_uv_lock_ignored(root) is False
+    assert (root / GITIGNORE).read_text() == f"dist/\n{UV_LOCK}\n"
 
 
 # --- run_scaffold ------------------------------------------------------------

@@ -6,9 +6,11 @@ import pytest
 from src.vommit.build import (
     BUN_BUILD,
     BUN_PUBLISH,
+    FIXABLE_WARNING_IDS,
     NPM_BUILD,
     NPM_PUBLISH,
     RECOMMENDED_UV_BUILD_REQUIREMENT,
+    WARNING_IDS,
     backend_warnings,
     build_warnings,
     clear_npm_auth_token,
@@ -18,6 +20,7 @@ from src.vommit.build import (
     npm_token_instructions,
     npm_whoami_command,
     project_warnings,
+    requested_fixes,
     suggested_commands,
     verify_npm_token,
     write_npm_auth_token,
@@ -769,3 +772,93 @@ def test_verify_npm_token_checks_via_env_not_npmrc(tmp_path, monkeypatch):
     verify_npm_token("the-new-token", runner)
 
     assert runner.env_for("bun pm whoami") == {"NPM_CONFIG_TOKEN": "the-new-token"}
+def test_every_warning_id_is_registered(tmp_path):
+    """
+    `--fix` and `ignore` both check ids against the registry, so an id that is
+    produced but not listed there is refused by a flag that should accept it.
+    """
+    hatchling = project(
+        tmp_path / "hatchling",
+        '[project]\nname = "mypkg"\nversion = "1.0.0"\n' + HATCHLING_BACKEND,
+    )
+    maturin = project(
+        tmp_path / "maturin",
+        '[project]\nname = "mypkg"\nversion = "1.0.0"\n'
+        '[build-system]\nrequires = ["maturin>=1"]\nbuild-backend = "maturin"\n',
+    )
+    missing = project(
+        tmp_path / "missing",
+        '[project]\nname = "other"\nversion = "1.0.0"\n' + UV_BUILD_BACKEND,
+    )
+
+    produced = {
+        warning.id
+        for root in (hatchling, maturin, missing)
+        for warning in project_warnings(root, config(build="uv build"))
+    } | {"hatch-build-command"}
+
+    assert produced == WARNING_IDS
+
+
+def test_no_fix_is_named_fixable_without_one(tmp_path):
+    """
+    Every id in FIXABLE_WARNING_IDS has to be able to produce a `fix`, or the
+    flag advertises a change it can never make.
+    """
+    hatchling = project(
+        tmp_path / "hatchling",
+        '[project]\nname = "mypkg"\nversion = "1.0.0"\n' + HATCHLING_BACKEND,
+    )
+    pinned = project(
+        tmp_path / "pinned",
+        '[project]\nname = "mypkg"\nversion = "1.0.0"\n' + UV_BUILD_BACKEND,
+    )
+
+    offered = {
+        warning.id
+        for root in (hatchling, pinned)
+        for warning in project_warnings(root, config(build="hatch build"))
+        if warning.fix
+    }
+
+    assert offered == FIXABLE_WARNING_IDS
+
+
+def test_nothing_asked_for_fixes_nothing():
+    assert requested_fixes(None) == set()
+
+
+def test_all_asks_for_every_fixable_id():
+    assert requested_fixes("all") == FIXABLE_WARNING_IDS
+
+
+@pytest.mark.parametrize(
+    "flag",
+    [
+        "hatchling-backend",
+        " hatchling-backend , hatch-build-command ",
+        "hatch-build-command,hatchling-backend,",
+    ],
+)
+def test_ids_are_taken_as_a_comma_separated_list(flag):
+    assert requested_fixes(flag) <= FIXABLE_WARNING_IDS
+    assert "hatchling-backend" in requested_fixes(flag)
+
+
+def test_a_misspelled_id_is_refused_rather_than_ignored():
+    """
+    A silent no-op here is indistinguishable from a project with nothing to fix,
+    which is the one outcome an unattended run cannot notice.
+    """
+    with pytest.raises(VommitError, match="hatchling-backends"):
+        requested_fixes("hatchling-backends")
+
+
+def test_a_real_id_with_no_fix_is_refused():
+    with pytest.raises(VommitError, match="maturin-uv-build"):
+        requested_fixes("maturin-uv-build")
+
+
+def test_an_empty_flag_is_refused():
+    with pytest.raises(VommitError, match="needs a warning id"):
+        requested_fixes(" , ")
