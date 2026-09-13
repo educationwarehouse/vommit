@@ -456,7 +456,9 @@ def _run(
     # raised inside the reporter, so that a step which failed is not also
     # reported as having finished
     with report_step(step.name):
-        result = runner.run(_from_root(root, step.command), env=env)
+        # the only commands that talk to a registry, so the only ones that can
+        # stop on an auth prompt nothing here can answer
+        result = runner.run(_from_root(root, step.command), env=env, watch_auth=True)
         if result.ok:
             return
 

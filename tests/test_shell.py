@@ -76,7 +76,8 @@ def test_local_runner_kills_a_command_asking_for_interactive_auth():
     """
     start = time.monotonic()
     result = LocalRunner().run(
-        shell("printf 'Authenticate your account at https://example.com\\n'; sleep 30")
+        shell("printf 'Authenticate your account at https://example.com\\n'; sleep 30"),
+        watch_auth=True,
     )
     elapsed = time.monotonic() - start
 
@@ -124,16 +125,23 @@ def test_context_runner_adapts_an_invoke_result():
     result = ContextRunner(context).run("git status")
 
     assert result == CommandResult("git status", 1, "out", "err")
-    kwargs = dict(context.kwargs)
-    watchers = kwargs.pop("watchers")
-    assert kwargs == {
+    assert context.kwargs == {
         "command": "git status",
         "hide": True,
         "warn": True,
         "in_stream": False,
+        # a git command has no registry to authenticate against
+        "watchers": [],
         "env": {},
     }
-    assert len(watchers) == 1
+
+
+def test_context_runner_watches_only_when_asked():
+    context = FakeContext(FakeInvokeResult(0, "", ""))
+
+    ContextRunner(context).run("bun publish", watch_auth=True)
+
+    assert len(context.kwargs["watchers"]) == 1
 
 
 def test_context_runner_passes_env_through():
@@ -166,7 +174,8 @@ def test_context_runner_kills_a_command_asking_for_interactive_auth():
             "printf 'packed 133B package.json\\n'; sleep 0.2; "
             "printf 'Authenticate your account at https://example.com\\n'; "
             "sleep 30"
-        )
+        ),
+        watch_auth=True,
     )
     elapsed = time.monotonic() - start
 
@@ -206,7 +215,9 @@ def test_local_runner_catches_a_prompt_with_no_trailing_newline():
     they exist for. `printf` with no `\\n` reproduces it.
     """
     start = time.monotonic()
-    result = LocalRunner().run(shell("printf 'Enter one-time password:'; sleep 30"))
+    result = LocalRunner().run(
+        shell("printf 'Enter one-time password:'; sleep 30"), watch_auth=True
+    )
     elapsed = time.monotonic() - start
 
     assert elapsed < 5, f"took {elapsed:.1f}s, the sleep was not interrupted"
@@ -221,7 +232,8 @@ def test_local_runner_catches_a_prompt_split_across_reads():
     than testing each piece on its own.
     """
     result = LocalRunner().run(
-        shell("printf 'Enter one-'; sleep 0.2; printf 'time password:'; sleep 30")
+        shell("printf 'Enter one-'; sleep 0.2; printf 'time password:'; sleep 30"),
+        watch_auth=True,
     )
 
     assert result.ok is False
@@ -249,7 +261,7 @@ def test_local_runner_does_not_abort_on_a_prompt_quoted_mid_line():
     the question starts a line with it; a message mentioning it does not.
     """
     quoted = "fix: do not Enter one-time password on publish"
-    result = LocalRunner().run(shell(f"echo '{quoted}'"))
+    result = LocalRunner().run(shell(f"echo '{quoted}'"), watch_auth=True)
 
     assert result.ok is True
     assert result.out == quoted
@@ -260,7 +272,9 @@ def test_local_runner_catches_an_indented_prompt():
     """
     A line start, not column zero: npm indents some of its output.
     """
-    result = LocalRunner().run(shell("printf '   Enter one-time password:'; sleep 30"))
+    result = LocalRunner().run(
+        shell("printf '   Enter one-time password:'; sleep 30"), watch_auth=True
+    )
 
     assert result.ok is False
     assert "interactive authentication" in result.stderr

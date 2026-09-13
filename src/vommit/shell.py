@@ -51,6 +51,7 @@ class Runner(t.Protocol):
         self,
         command: str,
         env: dict[str, str] | None = None,
+        watch_auth: bool = False,
     ) -> CommandResult: ...  # pragma: no cover
 
 
@@ -117,10 +118,9 @@ class LocalRunner:
     """
     Runs commands directly via subprocess, without a shell.
 
-    Commands run unattended, so two ways of blocking need answering. Closing
-    stdin (`DEVNULL`) gives a confirmation prompt immediate EOF. An auth
-    prompt does not block on stdin at all, so `Capture` watches the output
-    and kills the process when one appears.
+    Commands run unattended, so stdin is closed (`DEVNULL`) and a prompt
+    waiting on a keypress gets immediate EOF. `watch_auth` handles the prompt
+    that does not block on stdin at all; see `Capture`.
 
     A command needing a terminal, like an editor, is never run through
     `Runner`; see `editor.py`.
@@ -130,13 +130,33 @@ class LocalRunner:
         self,
         command: str,
         env: dict[str, str] | None = None,
+        watch_auth: bool = False,
     ) -> CommandResult:
+        arguments = shlex.split(command)
+        environment = {**os.environ, **env} if env else None
+        if not watch_auth:
+            completed = subprocess.run(
+                arguments,
+                capture_output=True,
+                stdin=subprocess.DEVNULL,
+                check=False,
+                text=True,
+                errors="replace",
+                env=environment,
+            )
+            return CommandResult(
+                command=command,
+                returncode=completed.returncode,
+                stdout=completed.stdout,
+                stderr=completed.stderr,
+            )
+
         process = subprocess.Popen(
-            shlex.split(command),
+            arguments,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             stdin=subprocess.DEVNULL,
-            env={**os.environ, **env} if env else None,
+            env=environment,
         )
         assert process.stdout is not None  # PIPE above guarantees this
         assert process.stderr is not None  # same
@@ -158,7 +178,9 @@ class LocalRunner:
 class Capture:
     """
     Reads both pipes of a running process, killing it if an auth prompt shows
-    up in either.
+    up in either. Only for the configured build and publish commands: a `git`
+    or `uv` command has no registry to authenticate against, and scanning its
+    output only risks reading a commit message as a prompt.
 
     One thread per pipe, or a single one would block on whichever stream the
     process writes to second. `os.read`, not `readline`: a prompt has no
@@ -205,8 +227,8 @@ class ContextRunner:
     Adapts an ewok/invoke Context, so tasks reuse the CLI's own runner config.
 
     Same guarantee as `LocalRunner`, through invoke's own mechanisms:
-    `in_stream=False` closes the child's stdin, `AuthPromptWatcher` aborts on
-    a prompt that closing stdin would not stop.
+    `in_stream=False` closes the child's stdin, and `watch_auth` adds the
+    `AuthPromptWatcher` for a prompt that closing stdin would not stop.
     """
 
     def __init__(self, ctx: Context) -> None:
@@ -216,6 +238,7 @@ class ContextRunner:
         self,
         command: str,
         env: dict[str, str] | None = None,
+        watch_auth: bool = False,
     ) -> CommandResult:
         try:
             # invoke merges `env` into the inherited environment unless asked
@@ -225,7 +248,7 @@ class ContextRunner:
                 hide=True,
                 warn=True,
                 in_stream=False,
-                watchers=[AuthPromptWatcher()],
+                watchers=[AuthPromptWatcher()] if watch_auth else [],
                 env=env or {},
             )
         except ThreadException as error:
