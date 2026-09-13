@@ -83,8 +83,15 @@ def decode(raw: bytes) -> str:
 def contains_auth_prompt(text: str) -> bool:
     """
     Whether `text` holds a prompt nothing here can answer.
+
+    Matched at the start of a line, because a tool asking the question puts it
+    there and a commit subject quoting it does not. Every command goes through
+    a `Runner`, so an unanchored match killed `git log` over a message like
+    "fix: do not Enter one-time password on publish".
     """
-    return any(pattern in text for pattern in AUTH_PROMPT_PATTERNS)
+    return any(
+        line.lstrip().startswith(AUTH_PROMPT_PATTERNS) for line in text.splitlines()
+    )
 
 
 class AuthPromptSeen(Exception):
@@ -99,6 +106,7 @@ class AuthPromptWatcher(StreamWatcher):
         self._raised = False
 
     def submit(self, stream: str) -> t.Iterable[str]:
+        # invoke hands over the whole stream so far, starting at a line start
         if not self._raised and contains_auth_prompt(stream):
             self._raised = True
             raise AuthPromptSeen(AUTH_PROMPT_MESSAGE)
@@ -178,7 +186,9 @@ class Capture:
         )
 
     def _drain(self, stream: t.IO[bytes], chunks: list[bytes]) -> None:
-        recent = b""
+        # the stream opens at the start of a line, which the first read has no
+        # newline of its own to show
+        recent = b"\n"
         while chunk := os.read(stream.fileno(), 8192):
             chunks.append(chunk)
             if self.aborted:

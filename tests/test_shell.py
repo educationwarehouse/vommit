@@ -240,3 +240,27 @@ def test_local_runner_survives_output_that_is_not_utf_8():
     assert result.ok is True
     assert result.out.startswith("caf")
     assert result.out.endswith("x")
+
+
+def test_local_runner_does_not_abort_on_a_prompt_quoted_mid_line():
+    """
+    Regression: every command goes through a `Runner`, so an unanchored match
+    killed `git log` over a commit subject quoting the wording. A tool asking
+    the question starts a line with it; a message mentioning it does not.
+    """
+    quoted = "fix: do not Enter one-time password on publish"
+    result = LocalRunner().run(shell(f"echo '{quoted}'"))
+
+    assert result.ok is True
+    assert result.out == quoted
+    assert "interactive authentication" not in result.stderr
+
+
+def test_local_runner_catches_an_indented_prompt():
+    """
+    A line start, not column zero: npm indents some of its output.
+    """
+    result = LocalRunner().run(shell("printf '   Enter one-time password:'; sleep 30"))
+
+    assert result.ok is False
+    assert "interactive authentication" in result.stderr
