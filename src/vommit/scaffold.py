@@ -21,9 +21,9 @@ from .shell import Runner
 
 Notify = t.Callable[[str], None]
 
-#: Writes the vommit config into the finished project; `setup`, in practice.
-#: Takes the branch as well as the root: `init` has already settled which branch
-#: this project releases from, and deriving it a second time can disagree.
+# Writes the vommit config into the finished project; `setup`, in practice.
+# Takes the branch as well as the root: `init` has already settled which branch
+# this project releases from, and deriving it a second time can disagree.
 Configure = t.Callable[[Path, str], None]
 
 PYPROJECT = "pyproject.toml"
@@ -34,20 +34,20 @@ ORIGIN = "origin"
 DEFAULT_BRANCH = "main"
 DEFAULT_COMMIT_MESSAGE = "chore: initial commit"
 
-#: Where a project that has never been released sits. `uv init` says 0.1.0.
+# Where a project that has never been released sits. `uv init` says 0.1.0.
 INITIAL_VERSION = "0.0.0"
 
-#: The answer that asks for no environment at all.
+# The answer that asks for no environment at all.
 NO_VENV = "none"
 
-#: Offered directory names, plus the way out. Kept inside the new project, so
-#: nothing depends on what happens to be activated.
+# Offered directory names, plus the way out. Kept inside the new project, so
+# nothing depends on what happens to be activated.
 VENV_CHOICES: list[str] = ["venv", ".venv", NO_VENV]
 
 DEFAULT_VENV = "venv"
 
-#: What `.gitignore` has to say for a release not to commit its own build or a
-#: virtual environment. Checked against whatever is already there.
+# What `.gitignore` has to say for a release not to commit its own build or a
+# virtual environment. Checked against whatever is already there.
 REQUIRED_IGNORES: list[str] = [
     "__pycache__/",
     "*.py[oc]",
@@ -59,7 +59,7 @@ REQUIRED_IGNORES: list[str] = [
     "venv/",
 ]
 
-#: Written whole when there is no `.gitignore` at all.
+# Written whole when there is no `.gitignore` at all.
 FALLBACK_GITIGNORE = """\
 # Python-generated files
 __pycache__/
@@ -137,7 +137,7 @@ class ScaffoldRequest:
     remote: str | None = None
     commit_message: str | None = None
     push: bool = False
-    #: Directory for the project's own environment; None creates none.
+    # Directory for the project's own environment; None creates none.
     venv: str | None = None
 
     def __post_init__(self) -> None:

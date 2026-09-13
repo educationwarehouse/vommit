@@ -3,11 +3,11 @@ Whether this project's build configuration will produce the release we intend.
 
 Two kinds of question, reported together:
 
-- *will the configured command build this project at all*: the module uv_build
-  looks for, the maturin target it would silently narrow to;
-- *is the project on the build backend vommit releases with*: Hatchling
-  instead of uv_build, or a uv_build pin outside the range vommit is tested
-  against.
+- *will the configured command build this project at all?* This covers the
+  module uv_build looks for and the maturin target it would silently narrow to;
+- *is the project on the build backend vommit releases with?* This covers
+  Hatchling instead of uv_build, or a uv_build pin outside the range vommit is
+  tested against.
 
 A release runs `clean` and `build` *after* the bump, so a build that cannot
 work is found out once the version has been written, the changelog rewritten
@@ -19,8 +19,8 @@ They warn rather than refuse. The build command is a shell string and the ways
 to make one work are open-ended; the only thing worth saying with confidence is
 that a specific, verified misconfiguration is present. Each warning carries a
 stable id, which is what a project puts in `ignore` to stop hearing it, and,
-where the change is mechanical and cannot lose information, a `fix` that
-writes it.
+where the change is mechanical and cannot lose information, a `fix` that writes
+it.
 """
 
 import dataclasses as dc
@@ -41,11 +41,11 @@ UV_BUILD = "uv build"
 UV_PUBLISH = "uv publish"
 HATCHLING = "hatchling.build"
 
-#: Where the uv build backend looks when the project does not say otherwise.
+# Where the uv build backend looks when the project does not say otherwise.
 DEFAULT_MODULE_ROOT = "src"
 
-#: The uv_build range vommit's releases are built with. A project outside it is
-#: not broken; it is on a backend version nothing here has been run against.
+# The uv_build range vommit's releases are built with. A project outside it is
+# not broken; it is on a backend version nothing here has been run against.
 RECOMMENDED_UV_BUILD_MINIMUM = "0.12.4"
 RECOMMENDED_UV_BUILD_MAXIMUM = "0.13"
 RECOMMENDED_UV_BUILD_SPECIFIER = SpecifierSet(
@@ -55,15 +55,15 @@ RECOMMENDED_UV_BUILD_REQUIREMENT = (
     f"uv_build>={RECOMMENDED_UV_BUILD_MINIMUM},<{RECOMMENDED_UV_BUILD_MAXIMUM}"
 )
 
-#: The build commands a `hatch build` project can be moved off mechanically:
-#: anything else is a script someone wrote on purpose, and rewriting it would
-#: throw away whatever it does besides building.
+# The build commands a `hatch build` project can be moved off mechanically:
+# anything else is a script someone wrote on purpose, and rewriting it would
+# throw away whatever it does besides building.
 HATCH_BUILD_COMMANDS = {"hatch build", "hatch build -c", "hatch build --clean"}
 HATCH_PUBLISH_COMMANDS = {"hatch publish"}
 
-#: Every id a warning here can carry. What `ignore` silences and what `setup
-#: --fix` names; kept in one place so both can say which ids exist rather than
-#: accepting a typo as a request nothing matches.
+# Every id a warning here can carry. What `ignore` silences and what `setup
+# --fix` names; kept in one place so both can say which ids exist rather than
+# accepting a typo as a request nothing matches.
 WARNING_IDS = frozenset(
     (
         "hatchling-backend",
@@ -74,14 +74,14 @@ WARNING_IDS = frozenset(
     )
 )
 
-#: The subset carrying a `fix`, where the project's shape allows it. The other
-#: ids describe something with no mechanical answer, so `--fix` cannot promise
-#: them anything.
+# The subset carrying a `fix`, where the project's shape allows it. The other
+# ids describe something with no mechanical answer, so `--fix` cannot promise
+# them anything.
 FIXABLE_WARNING_IDS = frozenset(
     ("hatchling-backend", "uv-build-pin", "hatch-build-command")
 )
 
-#: `--fix` shorthand for every id in `FIXABLE_WARNING_IDS`.
+# `--fix` shorthand for every id in `FIXABLE_WARNING_IDS`.
 FIX_ALL = "all"
 
 
@@ -234,9 +234,9 @@ def _hatchling_warning(
     Hatchling instead of uv_build, with an offer to swap when nothing is lost.
 
     The swap is two keys, but only for a project whose artifact is described by
-    nothing but those keys. Anything Hatchling-specific (a build target, a
-    dynamic version, an extra build requirement) has no uv_build equivalent to
-    translate into, so the blockers are named instead of guessed at.
+    nothing but those keys. Anything Hatchling-specific, such as a build target,
+    a dynamic version, or an extra build requirement, has no uv_build equivalent
+    to translate into, so the blockers are named instead of guessed at.
     """
     warning_id = "hatchling-backend"
     head = (

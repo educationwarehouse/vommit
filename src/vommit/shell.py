@@ -2,9 +2,12 @@ import dataclasses as dc
 import os
 import shlex
 import subprocess
+import threading
 import typing as t
 
 from ewok import Context
+from invoke.exceptions import ThreadException
+from invoke.watchers import StreamWatcher
 
 
 @dc.dataclass(frozen=True)
@@ -48,37 +51,184 @@ class Runner(t.Protocol):
         self,
         command: str,
         env: dict[str, str] | None = None,
+        watch_auth: bool = False,
     ) -> CommandResult: ...  # pragma: no cover
+
+
+# A process printing one of these is waiting on a browser click or an OTP.
+# Neither blocks on stdin, so watching the output is the only way to catch them.
+AUTH_PROMPT_PATTERNS: tuple[str, ...] = (
+    "Authenticate your account at",
+    "Enter one-time password",
+    "one-time password:",
+)
+
+# how many recent bytes to match against, so a pattern split over two reads
+# is still seen
+MATCH_WINDOW = 256
+
+AUTH_PROMPT_MESSAGE = (
+    "Aborted: this command is waiting on interactive authentication (a "
+    "browser login or a one-time password), which cannot be answered here."
+)
+
+
+def decode(raw: bytes) -> str:
+    """
+    Captured output as text. Lenient: one undecodable byte should not cost
+    the rest of the output.
+    """
+    return raw.decode("utf-8", errors="replace")
+
+
+def contains_auth_prompt(text: str) -> bool:
+    """
+    Whether `text` holds a prompt nothing here can answer.
+
+    Matched at the start of a line, because a tool asking the question puts it
+    there and a commit subject quoting it does not. Every command goes through
+    a `Runner`, so an unanchored match killed `git log` over a message like
+    "fix: do not Enter one-time password on publish".
+    """
+    return any(
+        line.lstrip().startswith(AUTH_PROMPT_PATTERNS) for line in text.splitlines()
+    )
+
+
+class AuthPromptSeen(Exception):
+    """
+    Raised by `AuthPromptWatcher` to make invoke kill the subprocess instead
+    of hanging on a prompt nothing here can answer.
+    """
+
+
+class AuthPromptWatcher(StreamWatcher):
+    def __init__(self) -> None:
+        self._raised = False
+
+    def submit(self, stream: str) -> t.Iterable[str]:
+        # invoke hands over the whole stream so far, starting at a line start
+        if not self._raised and contains_auth_prompt(stream):
+            self._raised = True
+            raise AuthPromptSeen(AUTH_PROMPT_MESSAGE)
+        return []
 
 
 class LocalRunner:
     """
     Runs commands directly via subprocess, without a shell.
+
+    Commands run unattended, so stdin is closed (`DEVNULL`) and a prompt
+    waiting on a keypress gets immediate EOF. `watch_auth` handles the prompt
+    that does not block on stdin at all; see `Capture`.
+
+    A command needing a terminal, like an editor, is never run through
+    `Runner`; see `editor.py`.
     """
 
     def run(
         self,
         command: str,
         env: dict[str, str] | None = None,
+        watch_auth: bool = False,
     ) -> CommandResult:
-        completed = subprocess.run(
-            shlex.split(command),
-            capture_output=True,
-            text=True,
-            check=False,
-            env={**os.environ, **env} if env else None,
+        arguments = shlex.split(command)
+        environment = {**os.environ, **env} if env else None
+        if not watch_auth:
+            completed = subprocess.run(
+                arguments,
+                capture_output=True,
+                stdin=subprocess.DEVNULL,
+                check=False,
+                text=True,
+                errors="replace",
+                env=environment,
+            )
+            return CommandResult(
+                command=command,
+                returncode=completed.returncode,
+                stdout=completed.stdout,
+                stderr=completed.stderr,
+            )
+
+        process = subprocess.Popen(
+            arguments,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            stdin=subprocess.DEVNULL,
+            env=environment,
         )
+        assert process.stdout is not None  # PIPE above guarantees this
+        assert process.stderr is not None  # same
+
+        capture = Capture(process)
+        stdout, stderr = capture.run(process.stdout, process.stderr)
+        if capture.aborted:
+            stderr = (
+                f"{stderr}\n{AUTH_PROMPT_MESSAGE}" if stderr else AUTH_PROMPT_MESSAGE
+            )
         return CommandResult(
             command=command,
-            returncode=completed.returncode,
-            stdout=completed.stdout,
-            stderr=completed.stderr,
+            returncode=process.returncode,
+            stdout=stdout,
+            stderr=stderr,
         )
+
+
+class Capture:
+    """
+    Reads both pipes of a running process, killing it if an auth prompt shows
+    up in either. Only for the configured build and publish commands: a `git`
+    or `uv` command has no registry to authenticate against, and scanning its
+    output only risks reading a commit message as a prompt.
+
+    One thread per pipe, or a single one would block on whichever stream the
+    process writes to second. `os.read`, not `readline`: a prompt has no
+    trailing newline, so reading by line hangs on the case this exists for.
+    """
+
+    def __init__(self, process: subprocess.Popen[bytes]) -> None:
+        self._process = process
+        self.aborted = False
+
+    def run(self, stdout: t.IO[bytes], stderr: t.IO[bytes]) -> tuple[str, str]:
+        captured: dict[t.IO[bytes], list[bytes]] = {stdout: [], stderr: []}
+        readers = [
+            threading.Thread(target=self._drain, args=(stream, chunks))
+            for stream, chunks in captured.items()
+        ]
+        for reader in readers:
+            reader.start()
+        self._process.wait()
+        for reader in readers:
+            reader.join()
+        return (
+            decode(b"".join(captured[stdout])),
+            decode(b"".join(captured[stderr])),
+        )
+
+    def _drain(self, stream: t.IO[bytes], chunks: list[bytes]) -> None:
+        # the stream opens at the start of a line, which the first read has no
+        # newline of its own to show
+        recent = b"\n"
+        while chunk := os.read(stream.fileno(), 8192):
+            chunks.append(chunk)
+            if self.aborted:
+                continue
+            recent = (recent + chunk)[-MATCH_WINDOW:]
+            if contains_auth_prompt(decode(recent)):
+                self.aborted = True
+                self._process.kill()
+        stream.close()
 
 
 class ContextRunner:
     """
     Adapts an ewok/invoke Context, so tasks reuse the CLI's own runner config.
+
+    Same guarantee as `LocalRunner`, through invoke's own mechanisms:
+    `in_stream=False` closes the child's stdin, and `watch_auth` adds the
+    `AuthPromptWatcher` for a prompt that closing stdin would not stop.
     """
 
     def __init__(self, ctx: Context) -> None:
@@ -88,9 +238,29 @@ class ContextRunner:
         self,
         command: str,
         env: dict[str, str] | None = None,
+        watch_auth: bool = False,
     ) -> CommandResult:
-        # invoke merges `env` into the inherited environment unless asked not to
-        result = self._context.run(command, hide=True, warn=True, env=env or {})
+        try:
+            # invoke merges `env` into the inherited environment unless asked
+            # not to
+            result = self._context.run(
+                command,
+                hide=True,
+                warn=True,
+                in_stream=False,
+                watchers=[AuthPromptWatcher()] if watch_auth else [],
+                env=env or {},
+            )
+        except ThreadException as error:
+            for wrapped in error.exceptions:
+                if isinstance(wrapped.value, AuthPromptSeen):
+                    return CommandResult(
+                        command=command,
+                        returncode=1,
+                        stdout="",
+                        stderr=str(wrapped.value),
+                    )
+            raise
         return CommandResult(
             command=command,
             returncode=result.exited,

@@ -9,7 +9,7 @@ is still theirs to write.
 NO_LICENSE = "none"
 OTHER_LICENSE = "other"
 
-#: Common SPDX identifiers, offered so the usual answer is not a typing exercise.
+# Common SPDX identifiers, offered so the usual answer is not a typing exercise.
 COMMON: tuple[str, ...] = (
     "MIT",
     "Apache-2.0",
@@ -23,7 +23,7 @@ COMMON: tuple[str, ...] = (
     "Unlicense",
 )
 
-#: What `init` offers, with the two answers that record nothing last.
+# What `init` offers, with the two answers that record nothing last.
 CHOICES: list[str] = [*COMMON, OTHER_LICENSE, NO_LICENSE]
 
 DEFAULT_LICENSE = "MIT"

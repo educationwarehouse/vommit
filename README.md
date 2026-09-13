@@ -101,8 +101,8 @@ stands. Build output such as `dist/` should be ignored by Git.
 
 A release also refuses to run from a branch other than `git.branch`. Pass
 `--allow-branch` to release from the branch that is checked out instead,
-typically a prerelease cut from a feature branch. It stays where it is rather
-than switching, and the freshness check then runs against that branch's
+typically for a prerelease cut from a feature branch. It stays where it is
+rather than switching, and the freshness check then runs against that branch's
 upstream; `git.on_wrong_branch` is left alone.
 
 | Flag                            | Meaning                                                                                                                          |
@@ -224,8 +224,11 @@ CI rather than silently skipped.
 
 Run `vommit setup` to create or complete `[tool.vommit]` interactively; use
 `vommit setup --mode=all` to revisit every setting, or
-`vommit setup --non-interactive` for defaults. For a project that does not exist
-yet, `vommit init` runs `uv init` first.
+`vommit setup --non-interactive` for defaults. The two are refused together:
+revisiting every setting is a question, and non-interactive means there is
+nobody to answer it, so the combination could only overwrite what is already
+configured. For a project that does not exist yet, `vommit init` runs
+`uv init` first.
 
 ### Where the version lives
 

@@ -14,7 +14,7 @@ from src.vommit.shell import LocalRunner
 from src.vommit.versioning import (
     CargoProject,
     UvProject,
-    to_cargo_version,
+    to_semver,
     version_source,
 )
 
@@ -57,7 +57,7 @@ def cargo(root, runner=None) -> CargoProject:
     ],
 )
 def test_to_cargo_version(version, expected):
-    assert to_cargo_version(version) == expected
+    assert to_semver(version) == expected
 
 
 @pytest.mark.parametrize(
@@ -75,12 +75,12 @@ def test_to_cargo_version_refuses_what_cargo_cannot_hold(version, complaint):
     are refused before the write rather than published under another number.
     """
     with pytest.raises(VommitError, match=complaint):
-        to_cargo_version(version)
+        to_semver(version)
 
 
 def test_to_cargo_version_refuses_a_version_that_is_not_one():
     with pytest.raises(VommitError, match="not a PEP 440 version"):
-        to_cargo_version("dynamic")
+        to_semver("dynamic")
 
 
 def test_current_version_is_the_cargo_version_in_pep_440(tmp_path):

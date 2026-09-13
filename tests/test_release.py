@@ -1,6 +1,8 @@
 import datetime as dt
+import json
 
 import pytest
+import tomlkit
 
 from src.vommit.bump import BumpRequest
 from src.vommit.config import Config
@@ -50,6 +52,10 @@ def recorder(sandbox: Sandbox, name: str, body: str) -> str:
 def ledger(sandbox: Sandbox) -> list[str]:
     path = sandbox.work / LEDGER
     return path.read_text().split() if path.exists() else []
+
+
+def fail_if_called() -> str:
+    raise AssertionError("authenticate() should not run for an npm project")
 
 
 def release(
@@ -320,6 +326,80 @@ def test_a_project_without_commands_falls_back_to_the_defaults(sandbox):
     assert [step.name for step in result.steps] == ["clean", "build"]
     assert result.pushed is True
     assert remote_tags(sandbox) == ["v0.2.0"]
+
+
+# --- npm-versioned project, independent of pypi ------------------------------
+
+
+def as_npm_project(sandbox: Sandbox, version: str = "0.1.0") -> None:
+    """
+    Reshapes the sandbox from a uv-versioned project into an npm-versioned
+    one: strips `[project]` (so `UvProject` has nothing to read) and adds a
+    `package.json` with `version`, which is what makes `version_source` pick
+    `NpmProject` instead. `[tool.vommit...]` config is left untouched.
+    """
+    pyproject = sandbox.work / "pyproject.toml"
+    document = tomlkit.parse(pyproject.read_text())
+    document.pop("project", None)
+    document.pop("build-system", None)
+    pyproject.write_text(tomlkit.dumps(document))
+    sandbox.write("package.json", json.dumps({"name": "sandbox", "version": version}))
+    sandbox.commit("chore: convert to an npm-versioned project")
+
+
+def test_publish_runs_for_an_npm_project_even_with_pypi_disabled(sandbox):
+    """
+    `pypi.enabled = false` used to also mean "run no publish step at all",
+    which made sense when PyPI was the only place anything published to. An
+    npm-versioned project has no PyPI phase to skip in the first place, so
+    it has to keep publishing on `commands.publish` alone.
+    """
+    with_pipeline(sandbox)
+    sandbox.set_config("tool.vommit.pypi", enabled=False)
+    as_npm_project(sandbox)
+    sandbox.commits("feat: something releasable")
+
+    result = release(sandbox)
+
+    assert ledger(sandbox) == ["clean", "build", "publish"]
+    assert result.published is True
+
+
+def test_publish_does_not_resolve_a_pypi_token_for_an_npm_project(sandbox):
+    """
+    An npm publish authenticates through its own `~/.npmrc`, not a token
+    vommit resolves and injects, so asking for a PyPI one here would be
+    asking for a credential this release will never use.
+    """
+    with_pipeline(sandbox)
+    sandbox.set_config("tool.vommit.pypi", enabled=False)
+    as_npm_project(sandbox)
+    sandbox.commits("feat: something releasable")
+
+    result = release(sandbox, authenticate=fail_if_called)
+
+    assert result.published is True
+
+
+def test_an_npm_project_never_resolves_a_pypi_token(sandbox):
+    """
+    `pypi.enabled` defaults to true and `setup` only ever *suggests* turning it
+    off, so every npm project configured before vommit knew what one was still
+    has it set. Resolving on that would demand a PyPI credential for a release
+    that publishes to npm and never reads one, so the project decides this,
+    not the setting.
+    """
+    script = recorder(sandbox, "show-token.sh", f'echo "$UV_PUBLISH_TOKEN" >> {LEDGER}')
+    with_pipeline(sandbox, publish=script)
+    with_pypi(sandbox)
+    as_npm_project(sandbox)
+    sandbox.commits("feat: something releasable")
+
+    result = release(sandbox, authenticate=fail_if_called)
+
+    # published, and nothing was ever asked for a PyPI token to do it
+    assert result.published is True
+    assert TOKEN not in ledger(sandbox)
 
 
 def test_a_config_without_any_commands_only_bumps_and_pushes(sandbox):
@@ -851,6 +931,29 @@ def test_an_ordinary_failure_does_not_blame_the_token(sandbox):
         release(sandbox)
 
     assert "vommit authenticate" not in str(caught.value)
+
+
+def test_a_republished_version_does_not_blame_the_token(sandbox):
+    """
+    npm/bun report "this version already exists" as a 403 too, the same
+    status a real credentials rejection uses, but no new token fixes it.
+    """
+    with_pipeline(
+        sandbox,
+        publish=(
+            "echo '403 Forbidden: https://registry.npmjs.org/pkg'; "
+            "echo ' - You cannot publish over the previously published "
+            "versions: 0.1.0.'; exit 1"
+        ),
+    )
+    with_pypi(sandbox)
+    sandbox.commits("feat: something releasable")
+
+    with pytest.raises(VommitError) as caught:
+        release(sandbox)
+
+    assert "vommit authenticate" not in str(caught.value)
+    assert "previously published" in str(caught.value)
 
 
 def test_a_failure_without_a_push_says_so(sandbox):

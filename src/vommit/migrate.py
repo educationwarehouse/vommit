@@ -258,7 +258,7 @@ class VersionFile:
         return self.package_pattern.search(target.read_text()) is not None
 
 
-#: Filenames a project keeps its version literal in, most conventional first.
+# Filenames a project keeps its version literal in, most conventional first.
 VERSION_FILE_NAMES: tuple[str, ...] = (
     "__about__.py",
     "_version.py",
@@ -266,8 +266,8 @@ VERSION_FILE_NAMES: tuple[str, ...] = (
     "__init__.py",
 )
 
-#: Variables that unambiguously hold a package version. A bare `version` is not
-#: here on purpose: it is as likely to be a schema or API version as this one.
+# Variables that unambiguously hold a package version. A bare `version` is not
+# here on purpose: it is as likely to be a schema or API version as this one.
 VERSION_VARIABLES: tuple[str, ...] = ("__version__", "VERSION")
 
 

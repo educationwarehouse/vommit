@@ -20,15 +20,15 @@ from pathlib import Path
 from .errors import VommitError
 from .shell import Runner
 
-#: What the user is handed and what comes back; the callable `run_bump` takes.
+# What the user is handed and what comes back; the callable `run_bump` takes.
 EntryEditor = t.Callable[[str], str]
 
-#: Editors that return immediately unless told to wait, leaving the entry as it
-#: was generated without anyone noticing they were asked.
+# Editors that return immediately unless told to wait, leaving the entry as it
+# was generated without anyone noticing they were asked.
 DETACHING = frozenset({"code", "code-insiders", "codium", "subl", "sublime_text"})
 WAITING = frozenset({"--wait", "-w", "-nw"})
 
-#: Last resort when neither git nor the environment names one.
+# Last resort when neither git nor the environment names one.
 FALLBACKS = ("sensible-editor", "nano", "vi")
 
 INSTRUCTIONS = """<!--
@@ -37,10 +37,10 @@ Everything in an HTML comment is removed; an empty entry cancels the release.
 -->
 """
 
-#: Every HTML comment, the way `git commit` drops every `#` line rather than
-#: only the ones it wrote itself: an instruction someone edited, reflowed or
-#: half-deleted is still an instruction, and must not reach the changelog.
-#: An unclosed comment runs to the end, exactly as a renderer would read it.
+# Every HTML comment, the way `git commit` drops every `#` line rather than
+# only the ones it wrote itself: an instruction someone edited, reflowed or
+# half-deleted is still an instruction, and must not reach the changelog.
+# An unclosed comment runs to the end, exactly as a renderer would read it.
 _COMMENT_RE = re.compile(r"<!--.*?(?:-->|\Z)\n?", re.DOTALL)
 
 
