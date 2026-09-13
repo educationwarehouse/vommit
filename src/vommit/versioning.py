@@ -19,6 +19,10 @@ DEFAULT_PRERELEASE_TOKEN: PrereleaseToken = "rc"
 
 PYPROJECT = "pyproject.toml"
 CARGO = "Cargo.toml"
+PACKAGE_JSON = "package.json"
+
+# what to indent `package.json` by when the file gives nothing to go on
+DEFAULT_JSON_INDENT = 2
 
 # The SemVer spelling of each PEP 440 prerelease marker. SemVer is what both
 # Cargo and npm demand, so `1.2.3rc1` is a parse error in either; maturin reads
@@ -94,16 +98,14 @@ def to_semver(version: str, manifest: str = CARGO) -> str:
     """
     `version` as plain SemVer, for a manifest that has to hold it.
 
-    `Cargo.toml` and `package.json` want the same thing here: PEP 440 in, SemVer
-    out, with `1.2.3rc1` spelled `1.2.3-rc.1` either way. `manifest` only names
-    the file in the error messages, so the caller's own filename is what a
-    refusal points at.
+    `Cargo.toml` and `package.json` want the same thing: PEP 440 in, SemVer
+    out, `1.2.3rc1` spelled `1.2.3-rc.1`. `manifest` only names the file in
+    the error messages.
 
-    Only the shapes vommit itself produces convert: a release, optionally with
-    an alpha/beta/rc prerelease. Post, dev, epoch and local segments have no
-    SemVer spelling that would read back as the same version, and a `--version`
-    flag can ask for any of them, so they are refused here (before anything is
-    written) rather than silently published under another number.
+    Only the shapes vommit produces convert: a release, optionally with an
+    alpha/beta/rc prerelease. Post, dev, epoch and local segments have no
+    SemVer spelling that reads back as the same version, and `--version` can
+    ask for any of them, so they are refused before anything is written.
     """
     parsed = parse_version(version)
     if parsed is None:
@@ -134,8 +136,8 @@ def to_semver(version: str, manifest: str = CARGO) -> str:
 
     # the conversion is only worth anything if it survives the trip back: the
     # wheel maturin builds is named after what *it* makes of this string.
-    # compared as versions rather than as text, because padding `1.2` out to the
-    # three components SemVer insists on is not a change of version.
+    # compared as versions, not text: padding `1.2` out to three components is
+    # not a change of version.
     if Version(semver) != parsed:  # pragma: no cover - backstop, not a path
         raise VommitError(
             f"{version} would be written to {manifest} as {semver}, which reads "
@@ -207,10 +209,10 @@ class VersionSource(abc.ABC):
     runner: Runner
     root: Path
 
-    #: The file holding the version, relative to `root`.
+    # The file holding the version, relative to `root`.
     manifest_name: t.ClassVar[str]
-    #: The lockfile that records it a second time, relative to `root`, or None
-    #: for a backend that manages none (see `NpmProject`).
+    # The lockfile that records it a second time, relative to `root`, or None
+    # for a backend that manages none (see `NpmProject`).
     lockfile_name: t.ClassVar[str | None]
 
     @property
@@ -344,17 +346,17 @@ class UvProject(VersionSource):
 @dc.dataclass(frozen=True)
 class SemVerProject(VersionSource):
     """
-    A project whose manifest holds plain SemVer rather than PEP 440.
+    A project whose manifest holds plain SemVer, not PEP 440.
 
     The arithmetic stays uv's, so every backend lands on the same version from
     the same commits: uv runs against a throwaway `pyproject.toml` holding
     only the current version, and `to_semver` converts the answer back. A
-    subclass supplies just the manifest-specific parts: `version_in`,
+    subclass supplies the manifest-specific parts: `version_in`,
     `_write_version` and `missing_version`.
     """
 
-    #: How this manifest spells the version field, for the error when it
-    #: states none.
+    # How this manifest spells the version field, for the error when it
+    # states none.
     missing_version: t.ClassVar[str]
 
     @abc.abstractmethod
@@ -411,7 +413,7 @@ class CargoProject(SemVerProject):
     manifest_name: t.ClassVar[str] = CARGO
     lockfile_name: t.ClassVar[str | None] = "Cargo.lock"
     missing_version: t.ClassVar[str] = "[package].version"
-    #: maturin's `[tool.maturin].manifest-path`, when the crate is not at root.
+    # maturin's `[tool.maturin].manifest-path`, when the crate is not at root.
     manifest_path: Path | None = None
 
     @property
@@ -475,13 +477,6 @@ class CargoProject(SemVerProject):
             )
 
 
-PACKAGE_JSON = "package.json"
-
-#: What to indent `package.json` by when the file itself gives nothing to go
-#: on. npm's own default.
-DEFAULT_JSON_INDENT = 2
-
-
 @dc.dataclass(frozen=True)
 class NpmProject(SemVerProject):
     """
@@ -529,9 +524,8 @@ class NpmProject(SemVerProject):
         return str(version) if version is not None else None
 
     def _write_version(self, semver: str) -> None:
-        # read as text first: only the version field changes, so reformatting
-        # the rest would put the whole manifest in the release commit's diff.
-        # `npm version` preserves the same two things.
+        # read as text first: only the version changes, so reformatting the
+        # rest would put the whole manifest in the release commit's diff
         raw = self.manifest.read_text()
         document = json.loads(raw)
         if not isinstance(document, dict):
@@ -545,8 +539,7 @@ def _json_indent(raw: str) -> int | str:
     """
     The indentation `raw` uses, in the form `json.dumps` takes it.
 
-    Read off the first indented line, because `json.loads` throws formatting
-    away and this is the only place it survives.
+    Read off the first indented line: `json.loads` throws formatting away.
     """
     for line in raw.splitlines()[1:]:
         stripped = line.lstrip(" \t")
@@ -561,13 +554,11 @@ def version_source(runner: Runner, root: Path) -> VersionSource:
 
     `Cargo.toml` wins only for the one shape that leaves uv nothing to work
     with: a maturin build whose `pyproject.toml` declares the version dynamic.
-    A real `[project].version` wins next: that is still what gets built, even
-    for a Python package that merely happens to vendor a crate, or one that
-    carries a frontend's `package.json` alongside the code that actually gets
-    released. Only once neither of those states a version does `package.json`
-    get a look in, which is what lets a project with no `pyproject.toml`
-    beyond a `[tool.vommit]` stanza (see `NpmProject`) still resolve to
-    something.
+    A real `[project].version` wins next: that is still what gets built, for a
+    Python package vendoring a crate or carrying a frontend's `package.json`.
+    `package.json` gets a look in only once neither states a version, which is
+    what resolves a project whose `pyproject.toml` is a `[tool.vommit]` stanza
+    and nothing else.
     """
     pyproject = root / PYPROJECT
     cargo = CargoProject(
@@ -586,9 +577,8 @@ def version_source(runner: Runner, root: Path) -> VersionSource:
     if npm_project.current_version() is not None:
         return npm_project
     if unsupported := npm_project.unsupported_version():
-        # falling through here would report "no version in pyproject.toml",
-        # naming the wrong file for a project that plainly states a version;
-        # say which version is in the way instead
+        # falling through reports "no version in pyproject.toml", the wrong
+        # file for a project that plainly states one
         raise VommitError(
             f"{relative_path(npm_project.manifest, root)} is at "
             f"{unsupported!r}, which vommit cannot bump: it releases versions "

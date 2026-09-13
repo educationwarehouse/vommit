@@ -24,9 +24,8 @@ WHOAMI_COMMANDS: dict[Binary, str] = {"bun": "bun pm whoami", "npm": "npm whoami
 
 REGISTRY = "registry.npmjs.org"
 
-# Where npm and bun both read a publish credential. A project-local `.npmrc`
-# would work too, but is likelier to be committed with a live token in it, so
-# `setup` only ever offers the one in the home directory.
+# where npm and bun both read a publish credential. A project-local `.npmrc`
+# works too, but is likelier to be committed with a live token in it.
 NPMRC = Path.home() / ".npmrc"
 
 TOKEN_ADVICE = (
@@ -45,9 +44,8 @@ def auth_token_setting(registry: str = REGISTRY) -> str:
     """
     The config key holding a publish credential for `registry`.
 
-    One spelling, four readers: the `.npmrc` line (with `=` and the token
-    after it), the `npm_config_` environment override, and the instructions
-    that tell someone to write either.
+    Used by the `.npmrc` line, the `npm_config_` environment override and the
+    instructions for writing either, so it is spelled once here.
     """
     return f"//{registry}/:_authToken"
 
@@ -56,9 +54,8 @@ def binary() -> Binary:
     """
     Which JS package manager to run commands with.
 
-    bun first: installing npm means installing Node, which can be hundreds of
-    megabytes a project has no other use for, so a machine that already has
-    bun is not told to go and get npm.
+    bun first: installing npm means installing Node, hundreds of megabytes a
+    project may have no other use for.
     """
     if shutil.which("bun"):
         return "bun"
@@ -76,10 +73,8 @@ def whoami_command() -> str:
     """
     The read-only command confirming a credential authenticates at all.
 
-    There is no npm equivalent of `auth.verify_token`'s deliberately
-    incomplete upload, so `whoami` is the closest safe substitute. It cannot
-    confirm the token also carries the 2FA exemption a publish needs; see
-    `TOKEN_ADVICE`.
+    It cannot confirm the token also carries the 2FA exemption a publish
+    needs; see `TOKEN_ADVICE`.
     """
     return WHOAMI_COMMANDS[binary()]
 
@@ -88,10 +83,9 @@ def suggested_commands(root: Path) -> CommandConfig | None:
     """
     The release commands `setup` offers for an npm project.
 
-    Whether this *is* one is the caller's question: it has the resolved
-    `VersionSource` already. `build` is suggested only when `package.json`
-    declares a "build" script, because plenty of packages have no build step
-    and one that fails on every release is worse than none.
+    Whether this *is* one is the caller's question. `build` is suggested only
+    when `package.json` declares a "build" script: plenty of packages have no
+    build step, and one that fails every release is worse than none.
 
     Raises `VommitError` when neither `npm` nor `bun` is on PATH.
     """
@@ -110,8 +104,8 @@ def has_auth_token(npmrc: Path = NPMRC, registry: str = REGISTRY) -> bool:
     Whether `npmrc` configures a publish credential for `registry`.
 
     Only the `_authToken` form, which is what `setup` writes. A project
-    authenticating any other way gets asked again, which is a nag rather than
-    a problem: none of this is ever a precondition for publishing to succeed.
+    authenticating some other way gets asked again. That is a nag, not a bug:
+    none of this is ever a precondition for publishing to succeed.
     """
     if not npmrc.exists():
         return False
@@ -123,15 +117,14 @@ def has_auth_token(npmrc: Path = NPMRC, registry: str = REGISTRY) -> bool:
 
 def write_auth_token(token: str, npmrc: Path = NPMRC, registry: str = REGISTRY) -> None:
     """
-    Stores `token` in `npmrc`, replacing the line for `registry` rather than
+    Stores `token` in `npmrc`, replacing `registry`'s line instead of
     appending a second, conflicting one on every re-authentication.
     """
     prefix = _token_line_prefix(registry)
     line = f"{prefix}{token}\n"
     if not npmrc.exists():
-        # created 0600 before it is written, so the token is never briefly
-        # readable at whatever the umask allows. A file that already exists
-        # keeps its mode: its owner may have widened it on purpose.
+        # 0600 before the token goes in, so it is never readable at whatever
+        # the umask allows. An existing file keeps its mode.
         npmrc.touch(mode=0o600)
         npmrc.write_text(line)
         return
@@ -152,7 +145,7 @@ def write_auth_token(token: str, npmrc: Path = NPMRC, registry: str = REGISTRY) 
 def clear_auth_token(npmrc: Path = NPMRC, registry: str = REGISTRY) -> bool:
     """
     Removes `registry`'s `_authToken` line, reporting whether there was one,
-    the way `TokenStore.forget` does for the PyPI keyring.
+    as `TokenStore.forget` does for the PyPI keyring.
     """
     if not npmrc.exists():
         return False
@@ -170,11 +163,10 @@ def token_env(token: str, registry: str = REGISTRY) -> dict[str, str]:
     The environment that authenticates npm or bun as `token`, without either
     reading `npmrc` for it.
 
-    Both spellings, because the two read one each and not the same one
-    (measured against npm 10.9.7 and bun 1.2): npm ignores `NPM_CONFIG_TOKEN`
-    and takes only the registry-scoped key, bun is the mirror image. Setting
-    just one lets npm fall back to `npmrc`, so a mistyped token would verify
-    against the credential already on disk and then overwrite it.
+    Both spellings: npm reads only the registry-scoped key and bun only
+    `NPM_CONFIG_TOKEN` (measured against npm 10.9.7 and bun 1.2). Set one and
+    npm falls back to `npmrc`, so a mistyped token verifies against the
+    credential already on disk and then overwrites it.
     """
     return {
         "NPM_CONFIG_TOKEN": token,
@@ -199,7 +191,7 @@ def verify_token(token: str, runner: Runner) -> None:
 def token_instructions(npmrc: Path = NPMRC, registry: str = REGISTRY) -> str:
     """
     `TOKEN_ADVICE` plus where the token goes, for `setup`, which suggests the
-    line rather than writing it.
+    line without writing it.
     """
     return (
         f"No npm publish credential found. {TOKEN_ADVICE}\nAdd\n"

@@ -134,9 +134,9 @@ def test_apply_refuses_a_version_semver_cannot_hold(tmp_path):
 
 def test_apply_never_touches_a_lockfile(tmp_path):
     """
-    Deliberate: see `NpmProject`'s docstring. A stale lockfile is left alone
-    rather than staged unchanged into a release commit that just moved the
-    version it claims to lock.
+    Deliberate: see `NpmProject`'s docstring. A stale lockfile is left alone,
+    not staged unchanged into a release commit that just moved the version it
+    claims to lock.
     """
     package(tmp_path, "1.0.0")
     (tmp_path / "package-lock.json").write_text('{"version": "1.0.0"}\n')

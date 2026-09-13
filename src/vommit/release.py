@@ -38,13 +38,17 @@ BUILD = "build"
 PUBLISH = "publish"
 POST_PUBLISH = "post_publish"
 
-#: Asks whether to publish the current version when no bump was warranted.
+# npm and bun report "this version is already on the registry" as a 403, the
+# same code as a rejected credential. A new token cannot fix it.
+VERSION_ALREADY_PUBLISHED = "cannot publish over the previously published"
+
+# Asks whether to publish the current version when no bump was warranted.
 ConfirmVersion = t.Callable[[str], bool]
 
-#: Asks whether to publish under a tag an earlier attempt left behind.
+# Asks whether to publish under a tag an earlier attempt left behind.
 ConfirmStale = t.Callable[["StaleTag"], bool]
 
-#: Wraps a step while it runs, so an entrypoint can show a spinner.
+# Wraps a step while it runs, so an entrypoint can show a spinner.
 StepReporter = t.Callable[[str], AbstractContextManager[t.Any]]
 
 
@@ -154,12 +158,9 @@ def run_release(
     git = config.active_git
     commands = config.commands
     pypi = config.active_pypi
-    # `pypi.enabled = false` means "skip the publish phase entirely" for a
-    # project whose artifact would otherwise go to PyPI, and existing
-    # projects rely on exactly that (see test_publishing_is_skipped_when_
-    # pypi_is_disabled). An npm-versioned project has no PyPI phase to skip
-    # in the first place, so it publishes on `commands.publish` alone,
-    # independent of a setting that was never about it.
+    # `pypi.enabled = false` skips the publish phase, which projects rely on.
+    # An npm project has no PyPI phase to skip, so it publishes on
+    # `commands.publish` alone.
     publish_phase = bool(pypi) or isinstance(project, NpmProject)
     steps = _plan(commands, publish_phase)
 
@@ -170,15 +171,10 @@ def run_release(
         _require_commits(git)
         _refuse_dirty_tree(repo, request.bump.allow_dirty)
 
-    # credentials are resolved before the first write, for the same reason bump
-    # checks the tag before creating the commit: discovering afterwards that
-    # there is no token would leave a pushed release with nothing on PyPI.
-    # Gated on the project, not just on `pypi`: an npm publish authenticates
-    # through its own `.npmrc`, not a token vommit resolves and injects, so
-    # asking for a PyPI one here would ask for a credential the release will
-    # never use. `pypi.enabled` cannot tell that on its own: it defaults to
-    # true, so every npm project configured before vommit knew what one was
-    # still has it set.
+    # resolved before the first write: finding out afterwards that there is no
+    # token leaves a pushed release with nothing on PyPI. Gated on the project
+    # and not on `pypi`, which defaults to true even for an npm project, whose
+    # publish authenticates through `.npmrc` and never sees this token.
     publishing = any(step.name == PUBLISH for step in steps)
     needs_pypi_token = bool(pypi) and not isinstance(project, NpmProject)
     token = (
@@ -477,20 +473,13 @@ def _run(
         )
 
 
-#: npm/bun's own wording for "this exact version is already on the
-#: registry", which they report as a 403 same as an actual credentials
-#: rejection. A version conflict is not fixable by a new token, so it must be
-#: told apart from the credentials case rather than assumed to be one.
-_VERSION_ALREADY_PUBLISHED = "cannot publish over the previously published"
-
-
 def _rejected_hint(result: CommandResult) -> str:
     """
     A 403 from an upload is almost always the token, not the package, except
     for npm/bun's specific version-conflict shape, which is never the token.
     """
     output = result.stdout + result.stderr
-    if _VERSION_ALREADY_PUBLISHED in output:
+    if VERSION_ALREADY_PUBLISHED in output:
         return ""
     if "403" not in output:
         return ""

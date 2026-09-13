@@ -54,18 +54,16 @@ class Runner(t.Protocol):
     ) -> CommandResult: ...  # pragma: no cover
 
 
-# Wording that means the process is waiting on a browser click or a one-time
-# password nobody here can provide. Neither is blocked on stdin, so closing it
-# does not help; watching the output is the only way to catch them. Add to
-# this tuple as other tools' equivalents turn up.
+# A process printing one of these is waiting on a browser click or an OTP.
+# Neither blocks on stdin, so watching the output is the only way to catch them.
 AUTH_PROMPT_PATTERNS: tuple[str, ...] = (
     "Authenticate your account at",
     "Enter one-time password",
     "one-time password:",
 )
 
-# How many recent bytes to match the patterns against, so one arriving in two
-# reads is still seen.
+# how many recent bytes to match against, so a pattern split over two reads
+# is still seen
 MATCH_WINDOW = 256
 
 AUTH_PROMPT_MESSAGE = (
@@ -76,20 +74,23 @@ AUTH_PROMPT_MESSAGE = (
 
 def decode(raw: bytes) -> str:
     """
-    Captured output as text, never refusing it: output is only matched and
-    shown back in errors, so one undecodable byte should not cost the rest.
+    Captured output as text. Lenient: one undecodable byte should not cost
+    the rest of the output.
     """
     return raw.decode("utf-8", errors="replace")
 
 
 def contains_auth_prompt(text: str) -> bool:
+    """
+    Whether `text` holds a prompt nothing here can answer.
+    """
     return any(pattern in text for pattern in AUTH_PROMPT_PATTERNS)
 
 
 class AuthPromptSeen(Exception):
     """
-    Raised by `AuthPromptWatcher` to make invoke kill the subprocess rather
-    than let it hang on a prompt nothing here can answer.
+    Raised by `AuthPromptWatcher` to make invoke kill the subprocess instead
+    of hanging on a prompt nothing here can answer.
     """
 
 
@@ -108,14 +109,13 @@ class LocalRunner:
     """
     Runs commands directly via subprocess, without a shell.
 
-    Everything here runs unattended, so two blocking shapes need answering.
-    Closing stdin (`DEVNULL`) gives a plain confirmation prompt immediate EOF
-    instead of a terminal to wait on. An auth prompt is not blocked on stdin
-    at all, though, so `Capture` watches the output and kills the process
-    when one appears.
+    Commands run unattended, so two ways of blocking need answering. Closing
+    stdin (`DEVNULL`) gives a confirmation prompt immediate EOF. An auth
+    prompt does not block on stdin at all, so `Capture` watches the output
+    and kills the process when one appears.
 
-    A command that genuinely needs a terminal, like an editor, is never run
-    through `Runner`; see `editor.py`.
+    A command needing a terminal, like an editor, is never run through
+    `Runner`; see `editor.py`.
     """
 
     def run(
@@ -152,11 +152,9 @@ class Capture:
     Reads both pipes of a running process, killing it if an auth prompt shows
     up in either.
 
-    One thread per pipe, because a single one would block on whichever stream
-    the process writes to second. `os.read` rather than `readline`, because a
-    prompt has no trailing newline to wait for: the cursor has to stay on the
-    line it is asking on, so reading by line would hang on exactly the case
-    this exists to catch.
+    One thread per pipe, or a single one would block on whichever stream the
+    process writes to second. `os.read`, not `readline`: a prompt has no
+    trailing newline, so reading by line hangs on the case this exists for.
     """
 
     def __init__(self, process: subprocess.Popen[bytes]) -> None:
@@ -185,8 +183,6 @@ class Capture:
             chunks.append(chunk)
             if self.aborted:
                 continue
-            # a window rather than the chunk, so a pattern arriving in two
-            # reads is still seen
             recent = (recent + chunk)[-MATCH_WINDOW:]
             if contains_auth_prompt(decode(recent)):
                 self.aborted = True
@@ -199,8 +195,8 @@ class ContextRunner:
     Adapts an ewok/invoke Context, so tasks reuse the CLI's own runner config.
 
     Same guarantee as `LocalRunner`, through invoke's own mechanisms:
-    `in_stream=False` closes the child's stdin, and `AuthPromptWatcher`
-    aborts on a prompt that closing stdin would not stop.
+    `in_stream=False` closes the child's stdin, `AuthPromptWatcher` aborts on
+    a prompt that closing stdin would not stop.
     """
 
     def __init__(self, ctx: Context) -> None:

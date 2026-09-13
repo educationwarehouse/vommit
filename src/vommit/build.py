@@ -41,11 +41,11 @@ UV_BUILD = "uv build"
 UV_PUBLISH = "uv publish"
 HATCHLING = "hatchling.build"
 
-#: Where the uv build backend looks when the project does not say otherwise.
+# Where the uv build backend looks when the project does not say otherwise.
 DEFAULT_MODULE_ROOT = "src"
 
-#: The uv_build range vommit's releases are built with. A project outside it is
-#: not broken; it is on a backend version nothing here has been run against.
+# The uv_build range vommit's releases are built with. A project outside it is
+# not broken; it is on a backend version nothing here has been run against.
 RECOMMENDED_UV_BUILD_MINIMUM = "0.12.4"
 RECOMMENDED_UV_BUILD_MAXIMUM = "0.13"
 RECOMMENDED_UV_BUILD_SPECIFIER = SpecifierSet(
@@ -55,15 +55,15 @@ RECOMMENDED_UV_BUILD_REQUIREMENT = (
     f"uv_build>={RECOMMENDED_UV_BUILD_MINIMUM},<{RECOMMENDED_UV_BUILD_MAXIMUM}"
 )
 
-#: The build commands a `hatch build` project can be moved off mechanically:
-#: anything else is a script someone wrote on purpose, and rewriting it would
-#: throw away whatever it does besides building.
+# The build commands a `hatch build` project can be moved off mechanically:
+# anything else is a script someone wrote on purpose, and rewriting it would
+# throw away whatever it does besides building.
 HATCH_BUILD_COMMANDS = {"hatch build", "hatch build -c", "hatch build --clean"}
 HATCH_PUBLISH_COMMANDS = {"hatch publish"}
 
-#: Every id a warning here can carry. What `ignore` silences and what `setup
-#: --fix` names; kept in one place so both can say which ids exist rather than
-#: accepting a typo as a request nothing matches.
+# Every id a warning here can carry. What `ignore` silences and what `setup
+# --fix` names; kept in one place so both can say which ids exist rather than
+# accepting a typo as a request nothing matches.
 WARNING_IDS = frozenset(
     (
         "hatchling-backend",
@@ -74,14 +74,14 @@ WARNING_IDS = frozenset(
     )
 )
 
-#: The subset carrying a `fix`, where the project's shape allows it. The other
-#: ids describe something with no mechanical answer, so `--fix` cannot promise
-#: them anything.
+# The subset carrying a `fix`, where the project's shape allows it. The other
+# ids describe something with no mechanical answer, so `--fix` cannot promise
+# them anything.
 FIXABLE_WARNING_IDS = frozenset(
     ("hatchling-backend", "uv-build-pin", "hatch-build-command")
 )
 
-#: `--fix` shorthand for every id in `FIXABLE_WARNING_IDS`.
+# `--fix` shorthand for every id in `FIXABLE_WARNING_IDS`.
 FIX_ALL = "all"
 
 

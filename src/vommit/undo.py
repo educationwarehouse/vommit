@@ -27,10 +27,10 @@ class UndoPlan:
     commit: str | None = None
     previous_commit: str | None = None
     changelog_path: Path | None = None
-    # named rather than assumed: a crate-backed project bumps Cargo.toml and
-    # Cargo.lock, so those are the files an undo has to put back. None where the
-    # backend keeps no lockfile: reaching for one it never wrote would unstage
-    # somebody else's edit to a file this release did not touch.
+    # named, not assumed: a crate-backed project bumps Cargo.toml and
+    # Cargo.lock, so those are the files an undo puts back. None where the
+    # backend keeps no lockfile, or an undo would unstage somebody else's edit
+    # to a file this release never touched.
     manifest: str = PYPROJECT
     lockfile: str | None = LOCKFILE
 

@@ -249,7 +249,7 @@ def _asker[ResultT](
     return ask
 
 
-#: The answers the release question takes, and what each one means.
+# The answers the release question takes, and what each one means.
 BUMP_CHOICES: dict[str, BumpAnswer] = {
     "yes": "yes",
     "edit the changelog entry": "edit",
@@ -447,11 +447,9 @@ def setup(
         # worth rejecting before anything is written rather than after
         autofix = requested_fixes(fix)
         if mode == "all" and non_interactive:
-            # `--mode=all` means "revisit every setting", which is a question,
-            # and `--non-interactive` means there is nobody to answer one. Left
-            # to run, the combination silently overwrites configured values
-            # with whatever vommit would suggest today, which is the one
-            # outcome neither flag asks for.
+            # `--mode=all` asks about every setting and `--non-interactive`
+            # answers none, so together they can only overwrite what is
+            # already configured
             raise VommitError(
                 "--mode=all revisits every setting, which needs someone to "
                 "answer for them; it cannot be combined with "
@@ -463,8 +461,7 @@ def setup(
             return migrate(c, project_dir=project_dir)
 
         runner = ContextRunner(c)
-        # resolved once and passed down: every `version_source` call can shell
-        # out to `uv version`, and setup asks the same question five times over
+        # resolved once and passed down: each call can shell out to `uv version`
         project = version_source(runner, root)
 
         config = Config.from_pyproject(root)
@@ -506,7 +503,7 @@ def _offer_npm_token(runner: ContextRunner, non_interactive: bool) -> None:
 
     Non-interactive only prints what to do; interactive offers to write it to
     `~/.npmrc` there and then, so setup and a first release happen in one
-    sitting rather than the release failing on this days later.
+    sitting instead of the release failing on this days later.
     """
     if npm.has_auth_token():
         return
@@ -526,9 +523,8 @@ def _offer_npm_token(runner: ContextRunner, non_interactive: bool) -> None:
         rich.print("[yellow]No token entered; nothing written.[/yellow]")
         return
 
-    # checked before it is written, the same way `authenticate` does it: this
-    # is where a token is most likely to be mistyped, and the longest wait
-    # before anything would notice (the first release, days later)
+    # checked first, as `authenticate` does: a typo here would otherwise
+    # surface at the first release, days later
     npm.verify_token(token, runner)
     npm.write_auth_token(token)
     rich.print(f"[green]Wrote a publish token to {npm.NPMRC}.[/green]")
@@ -544,10 +540,9 @@ def _suggest_npm_defaults(
     `commands.publish` and `pypi.enabled` the prompt is about to ask for. A
     field already configured (named in `present_paths`) is left alone.
 
-    `pypi.enabled` defaults on, and used to be what let the publish step run
-    at all, so it had to stay on even for a project that had never touched
-    PyPI. Publishing no longer depends on it (see `run_release`), so it can
-    mean what it should: there is no PyPI credential to resolve here.
+    `pypi.enabled` used to be what let the publish step run at all, so it had
+    to stay on for projects that had never touched PyPI. Publishing no longer
+    depends on it (see `run_release`), so it can default off here.
     """
     if config.commands is not None:
         suggested = npm.suggested_commands(root)

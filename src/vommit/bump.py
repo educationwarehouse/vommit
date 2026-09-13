@@ -15,9 +15,9 @@ from .versioning import is_prerelease, plan_bump, version_source
 
 Notify = t.Callable[[str], None]
 
-#: What the confirmation step can answer. `edit` reopens the changelog entry and
-#: asks again; bool is still accepted, so callers with nothing to edit (and the
-#: `always` default) need not know about the third option.
+# What the confirmation step can answer. `edit` reopens the changelog entry and
+# asks again; bool is still accepted, so callers with nothing to edit (and the
+# `always` default) need not know about the third option.
 BumpAnswer = t.Literal["yes", "edit", "no"]
 Confirm = t.Callable[["BumpResult"], "bool | BumpAnswer"]
 
@@ -268,8 +268,8 @@ def run_bump(
     if answer == "no":
         return dc.replace(result, noop=True, cancelled=True)
 
-    # a backend with no lockfile of its own has nothing to relock and nothing
-    # to stage, which is the same thing `frozen` asks for
+    # no lockfile of its own means nothing to relock or stage, which is what
+    # `frozen` asks for
     lockfile_ignored = (
         bool(git and repo.ignores(project.lockfile_name))
         if project.lockfile_name

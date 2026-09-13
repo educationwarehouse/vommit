@@ -85,7 +85,7 @@ class Response(t.Protocol):
     status_code: int
 
 
-#: Posts the probe upload. `requests.post` is the one that really does.
+# Posts the probe upload. `requests.post` is the one that really does.
 Poster = t.Callable[..., Response]
 
 

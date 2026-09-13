@@ -54,12 +54,10 @@ def test_local_runner_captures_the_exit_code():
 def test_local_runner_closes_stdin_instead_of_inheriting_it():
     """
     Regression: stdin used to inherit the caller's, so a configured command
-    that turned out to need a live terminal (a plain confirmation prompt,
-    say) blocked on it forever rather than failing, and hidden behind a
-    captured runner, blocked invisibly, with nothing on screen explaining
-    why. `cat` with no input is exactly that shape: it blocks until stdin
-    closes, so this hangs the whole test suite instead of asserting anything
-    on a version of this method that inherits stdin.
+    needing a live terminal blocked forever instead of failing, and behind a
+    captured runner it blocked invisibly. `cat` with no input is that shape:
+    it blocks until stdin closes, so this hangs the whole suite on a version
+    of this method that inherits stdin.
     """
     result = LocalRunner().run("cat")
     assert result.ok is True
