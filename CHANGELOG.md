@@ -2,6 +2,11 @@
 
 <!-- next-version-placeholder -->
 
+## v0.8.0 (2026-10-07)
+
+### Feature
+* **npm:** support npm package releases
+
 ## v0.7.0 (2026-09-07)
 
 ### Feature
