@@ -27,10 +27,12 @@ class UndoPlan:
     commit: str | None = None
     previous_commit: str | None = None
     changelog_path: Path | None = None
-    # named rather than assumed: a crate-backed project bumps Cargo.toml and
-    # Cargo.lock, so those are the files an undo has to put back
+    # named, not assumed: a crate-backed project bumps Cargo.toml and
+    # Cargo.lock, so those are the files an undo puts back. None where the
+    # backend keeps no lockfile, or an undo would unstage somebody else's edit
+    # to a file this release never touched.
     manifest: str = PYPROJECT
-    lockfile: str = LOCKFILE
+    lockfile: str | None = LOCKFILE
 
     @property
     def rewinds_history(self) -> bool:
@@ -40,8 +42,12 @@ class UndoPlan:
     def paths(self) -> tuple[str, ...]:
         if self.rewinds_history:
             return ()
-        changelog = (str(self.changelog_path),) if self.changelog_path else ()
-        return (self.manifest, self.lockfile, *changelog)
+        written = (
+            self.manifest,
+            self.lockfile,
+            str(self.changelog_path) if self.changelog_path else None,
+        )
+        return tuple(path for path in written if path)
 
 
 @dc.dataclass(frozen=True)

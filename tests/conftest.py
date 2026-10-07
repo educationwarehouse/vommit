@@ -62,6 +62,7 @@ class FakeRunner:
         self,
         command: str,
         env: dict[str, str] | None = None,
+        watch_auth: bool = False,
     ) -> CommandResult:
         self.calls.append(command)
         self.envs.append(env)

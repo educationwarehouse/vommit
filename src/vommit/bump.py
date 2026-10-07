@@ -15,9 +15,9 @@ from .versioning import is_prerelease, plan_bump, version_source
 
 Notify = t.Callable[[str], None]
 
-#: What the confirmation step can answer. `edit` reopens the changelog entry and
-#: asks again; bool is still accepted, so callers with nothing to edit (and the
-#: `always` default) need not know about the third option.
+# What the confirmation step can answer. `edit` reopens the changelog entry and
+# asks again; bool is still accepted, so callers with nothing to edit (and the
+# `always` default) need not know about the third option.
 BumpAnswer = t.Literal["yes", "edit", "no"]
 Confirm = t.Callable[["BumpResult"], "bool | BumpAnswer"]
 
@@ -268,7 +268,13 @@ def run_bump(
     if answer == "no":
         return dc.replace(result, noop=True, cancelled=True)
 
-    lockfile_ignored = bool(git and repo.ignores(project.lockfile_name))
+    # no lockfile of its own means nothing to relock or stage, which is what
+    # `frozen` asks for
+    lockfile_ignored = (
+        bool(git and repo.ignores(project.lockfile_name))
+        if project.lockfile_name
+        else True
+    )
     applied = project.apply(plan, frozen=lockfile_ignored)
     if applied != next_version:
         raise VommitError(
@@ -280,8 +286,9 @@ def run_bump(
         update.apply()
 
     if git:
-        if project.lockfile.exists() and not lockfile_ignored:
-            touched.append(project.lockfile_name)
+        lockfile = project.lockfile
+        if lockfile and lockfile.exists() and not lockfile_ignored:
+            touched.append(t.cast(str, project.lockfile_name))
         try:
             repo.add(touched)
         except VommitError as error:
