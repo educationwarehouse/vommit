@@ -2,6 +2,11 @@
 
 <!-- next-version-placeholder -->
 
+## v0.9.0 (2026-10-16)
+
+### Feature
+* **crate:** add crates.io release support
+
 ## v0.8.0 (2026-10-07)
 
 ### Feature

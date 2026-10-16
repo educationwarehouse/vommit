@@ -4,7 +4,7 @@ build-backend = "uv_build"
 
 [project]
 name = "vommit"
-version = "0.8.0"
+version = "0.9.0"
 classifiers = ["Programming Language :: Python :: 3"]
 description = "Vommit Oversees Making & Managing Installable Things"
 readme = "README.md"
