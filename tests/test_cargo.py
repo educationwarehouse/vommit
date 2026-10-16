@@ -50,6 +50,14 @@ def test_suggested_commands_package_before_the_push_and_publish_after():
     assert commands.post_publish == ""
 
 
+def test_a_workspace_packages_and_publishes_every_member():
+    commands = cargo.suggested_commands(workspace=True)
+
+    assert commands.build == "cargo package --workspace"
+    assert commands.publish == "cargo publish --workspace"
+    assert commands.clean == ""
+
+
 def test_no_token_anywhere():
     assert cargo.token_source() is None
     assert cargo.has_token() is False

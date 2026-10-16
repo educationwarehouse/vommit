@@ -412,7 +412,8 @@ class SemVerProject(VersionSource):
 @dc.dataclass(frozen=True)
 class CargoProject(SemVerProject):
     """
-    A project whose version is `[package].version` in `Cargo.toml`.
+    A project whose version is `[package].version` in `Cargo.toml`, or the
+    `[workspace.package].version` its crates inherit.
 
     maturin builds the wheel from the crate and takes its version from there, so
     `pyproject.toml` says `dynamic = ["version"]` and has nothing for
@@ -421,7 +422,9 @@ class CargoProject(SemVerProject):
 
     manifest_name: t.ClassVar[str] = CARGO
     lockfile_name: t.ClassVar[str | None] = "Cargo.lock"
-    missing_version: t.ClassVar[str] = "[package].version"
+    missing_version: t.ClassVar[str] = (
+        "[package].version` or `[workspace.package].version"
+    )
     # maturin's `[tool.maturin].manifest-path`, when the crate is not at root.
     manifest_path: Path | None = None
 
@@ -438,9 +441,20 @@ class CargoProject(SemVerProject):
         else:
             return self.manifest_path.parent / t.cast(str, self.lockfile_name)
 
+    @property
+    def is_workspace(self) -> bool:
+        """
+        Whether the manifest declares a workspace, so its crates are released
+        together.
+        """
+        if not self.manifest.exists():
+            return False
+        document = tomlkit.parse(self.manifest.read_text())
+        return isinstance(document.get("workspace"), dict)
+
     def version_in(self, manifest: str) -> str | None:
-        package = tomlkit.parse(manifest).get("package")
-        version = package.get("version") if isinstance(package, dict) else None
+        table = _cargo_version_table(tomlkit.parse(manifest))
+        version = table.get("version") if table is not None else None
         # Cargo's spelling of a prerelease is a legal PEP 440 one, so parsing is
         # also the conversion: `1.2.3-rc.1` reads back as `1.2.3rc1`, which is
         # the version maturin will put on the wheel.
@@ -449,10 +463,13 @@ class CargoProject(SemVerProject):
 
     def _write_version(self, semver: str) -> None:
         document = tomlkit.parse(self.manifest.read_text())
-        package = document.get("package")
-        if not isinstance(package, dict):
-            raise VommitError(f"[package] must be a TOML table in {CARGO}.")
-        package["version"] = semver
+        table = _cargo_version_table(document)
+        if table is None:
+            raise VommitError(
+                f"{CARGO} no longer states a version in [package] or "
+                "[workspace.package]."
+            )
+        table["version"] = semver
         self.manifest.write_text(tomlkit.dumps(document))
 
     def _after_write(self, frozen: bool) -> None:
@@ -556,6 +573,26 @@ class NpmProject(SemVerProject):
         document["version"] = semver
         text = json.dumps(document, indent=_json_indent(raw))
         self.manifest.write_text(text + "\n" if raw.endswith("\n") else text)
+
+
+def _cargo_version_table(document: t.Any) -> t.Any | None:
+    """
+    The table in `Cargo.toml` whose `version` is the one to move.
+
+    `[package]` when it states a version of its own; `[workspace.package]`
+    otherwise, which is where `version.workspace = true` reads it from, and
+    the only place a virtual manifest (no `[package]` at all) has one. A
+    member that states its own version is not moved along with the rest.
+    """
+    package = document.get("package")
+    if isinstance(package, dict) and isinstance(package.get("version"), str):
+        return package
+
+    workspace = document.get("workspace")
+    shared = workspace.get("package") if isinstance(workspace, dict) else None
+    if isinstance(shared, dict) and isinstance(shared.get("version"), str):
+        return shared
+    return None
 
 
 def _json_indent(raw: str) -> int | str:

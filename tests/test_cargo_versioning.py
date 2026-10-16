@@ -158,7 +158,7 @@ def test_apply_refuses_a_manifest_that_lost_its_package_table(tmp_path):
     runner = Clobbering().reply("uv", stdout='{"version": "1.1.0"}')
     project = cargo(crate(tmp_path, "1.0.0"), runner=runner)
 
-    with pytest.raises(VommitError, match=r"\[package\] must be a TOML table"):
+    with pytest.raises(VommitError, match="no longer states a version"):
         project.apply_bump("minor")
 
 

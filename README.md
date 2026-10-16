@@ -231,6 +231,17 @@ nobody to answer it, so the combination could only overwrite what is already
 configured. For a project that does not exist yet, `vommit init` runs
 `uv init` first.
 
+### Checking a project
+
+```bash
+vommit check
+```
+
+Reports the project type, version source, release configuration, credentials,
+and [build checks](#build-checks) without changing files. Exits non-zero for
+missing or conflicting versions, or missing or invalid configuration.
+Incomplete settings and missing credentials produce warnings.
+
 ### Where the version lives
 
 `setup` detects a literal version in common package files alongside
@@ -263,8 +274,12 @@ A Rust crate released on its own is recognised the same way: `Cargo.toml`
 states `[package].version` and `pyproject.toml` has no `[project]` table, only
 the `[tool.vommit]` configuration (or there is no `pyproject.toml` at all).
 Vommit bumps `[package].version`, relocks `Cargo.lock` when there is one, and
-converts versions exactly as for maturin. Only a single crate is supported; a
-workspace version in `[workspace.package]` is not.
+converts versions exactly as for maturin.
+
+Workspaces use `[workspace.package].version` when the root has no explicit
+`[package].version`. Members inherit the bump through `version.workspace = true`.
+Independent member versions and dependency version requirements must be updated
+manually.
 
 `setup` suggests commands for it and switches `pypi.enabled` off:
 
@@ -274,6 +289,10 @@ clean = ""                # `cargo clean` would throw away the build cache
 build = "cargo package"   # verify-builds the crate before anything is pushed
 publish = "cargo publish"
 ```
+
+For a workspace both commands get `--workspace` (cargo 1.90 or newer), which
+packages and publishes every member in dependency order and skips those marked
+`publish = false`.
 
 `cargo build --release` is not suggested: crates.io receives source, not a
 binary, and `cargo publish` verifies in the dev profile, so a release build

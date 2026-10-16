@@ -167,3 +167,72 @@ def test_a_bump_moves_the_crate_and_relocks_it(tmp_path):
 
     assert source.current_version() == "1.5.0"
     assert runner.ran(f"cargo update --workspace --manifest-path {root / 'Cargo.toml'}")
+
+
+# --- a workspace sharing one version -----------------------------------------
+
+VIRTUAL = (
+    '[workspace]\nmembers = ["a"]\nresolver = "2"\n\n'
+    '[workspace.package]\nversion = "{version}"\nedition = "2021"\n'
+)
+MEMBER = '[package]\nname = "a"\nversion.workspace = true\nedition.workspace = true\n'
+
+
+def workspace(root, version="0.1.0", manifest=VIRTUAL):
+    (root / "pyproject.toml").write_text(STANZA)
+    (root / "Cargo.toml").write_text(manifest.format(version=version))
+    (root / "a").mkdir()
+    (root / "a" / "Cargo.toml").write_text(MEMBER)
+    return root
+
+
+def test_a_virtual_workspace_releases_its_shared_version(tmp_path):
+    source = version_source(LocalRunner(), workspace(tmp_path, "0.3.0-beta.1"))
+
+    assert isinstance(source, CrateProject)
+    assert source.is_workspace is True
+    assert source.current_version() == "0.3.0b1"
+
+
+def test_a_bump_moves_the_shared_version_and_leaves_members_inheriting_it(tmp_path):
+    root = workspace(tmp_path)
+    runner = FakeRunner().reply("uv", stdout='{"version": "0.2.0"}')
+
+    version_source(runner, root).apply_bump("minor")
+
+    manifest = (root / "Cargo.toml").read_text()
+    assert '[workspace.package]\nversion = "0.2.0"' in manifest
+    assert (root / "a" / "Cargo.toml").read_text() == MEMBER
+
+
+def test_a_root_package_inheriting_the_version_moves_the_workspace_one(tmp_path):
+    root = workspace(
+        tmp_path,
+        manifest='[package]\nname = "root"\nversion.workspace = true\n\n' + VIRTUAL,
+    )
+    runner = FakeRunner().reply("uv", stdout='{"version": "0.1.1"}')
+
+    source = version_source(runner, root)
+    source.apply_bump("patch")
+
+    assert source.current_version() == "0.1.1"
+    manifest = (root / "Cargo.toml").read_text()
+    assert "version.workspace = true" in manifest
+    assert '[workspace.package]\nversion = "0.1.1"' in manifest
+
+
+def test_a_root_package_with_its_own_version_keeps_releasing_that(tmp_path):
+    root = workspace(
+        tmp_path,
+        "9.9.9",
+        manifest='[package]\nname = "root"\nversion = "1.0.0"\n\n' + VIRTUAL,
+    )
+    assert version_source(LocalRunner(), root).current_version() == "1.0.0"
+
+
+def test_a_single_crate_is_not_a_workspace(tmp_path):
+    assert version_source(LocalRunner(), crate(tmp_path)).is_workspace is False
+
+
+def test_a_missing_manifest_is_not_a_workspace(tmp_path):
+    assert CrateProject(runner=LocalRunner(), root=tmp_path).is_workspace is False

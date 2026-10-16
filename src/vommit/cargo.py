@@ -45,17 +45,24 @@ def cargo_home() -> Path:
     return Path(os.environ.get("CARGO_HOME") or Path.home() / ".cargo")
 
 
-def suggested_commands() -> CommandConfig:
+def suggested_commands(workspace: bool = False) -> CommandConfig:
     """
-    The release commands `setup` offers for a crate.
+    The release commands `setup` offers for a crate, or for every crate in a
+    workspace.
+
+    `--workspace` for a workspace: a virtual manifest has no package of its own
+    for a bare `cargo publish` to publish, and members sharing the version are
+    released together. Cargo publishes them in dependency order and skips any
+    marked `publish = false`.
 
     `clean` is empty: `cargo clean` throws away the whole `target/` directory,
     and with it the cache that keeps the double verification cheap.
     """
+    suffix = " --workspace" if workspace else ""
     commands = CommandConfig()
     commands.clean = ""
-    commands.build = BUILD_COMMAND
-    commands.publish = PUBLISH_COMMAND
+    commands.build = BUILD_COMMAND + suffix
+    commands.publish = PUBLISH_COMMAND + suffix
     return commands
 
 

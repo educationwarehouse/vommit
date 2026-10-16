@@ -82,6 +82,8 @@ badge = "coverage.svg"
 allow_breaking_bang = true
 allow_breaking_footer = true
 prerelease_token = "beta"
+confirm = true
+ignore = []
 
 [tool.vommit.git]
 enabled = true

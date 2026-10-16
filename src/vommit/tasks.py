@@ -41,6 +41,7 @@ from .bump import (
     select_level,
 )
 from .changelog import Changelog
+from .check import run_check
 from .config import DERIVE_BRANCH, TOML_KEY, CommandConfig, Config
 from .editor import edit_entry
 from .errors import VommitError
@@ -489,7 +490,9 @@ def setup(
             suggested = npm.suggested_commands(root) if needs_commands else None
             _suggest_defaults(config, present_paths, suggested)
         elif isinstance(project, CrateProject):
-            _suggest_defaults(config, present_paths, cargo.suggested_commands())
+            _suggest_defaults(
+                config, present_paths, cargo.suggested_commands(project.is_workspace)
+            )
 
         if not non_interactive:
             if mode == "missing" and Config.is_complete(pyproject):
@@ -742,6 +745,31 @@ def _write_config(
     config.write_to_pyproject(pyproject, replaces=replaces)
     if changelog := config.active_changelog:
         Changelog(settings=changelog, root=root).ensure()
+
+
+CHECK_STYLES = {"ok": "green", "warn": "yellow", "fail": "red", "info": "blue"}
+
+
+# not hookable, like `setup`: a plugin-wide `check` would otherwise run this in
+# every project edwh is used in
+@task(hookable=False)
+def check(c: Context, project_dir: str | None = None) -> None:
+    """
+    Show what vommit makes of this project, without changing anything.
+
+    The kind of project and where its version lives, whether the config is
+    complete, what a release would run and whether there is a credential to
+    publish with. Exits non-zero when a release could not run as configured.
+    """
+    report = run_check(_project_root(project_dir), ContextRunner(c))
+    for finding in report.findings:
+        style = CHECK_STYLES[finding.status]
+        rich.print(
+            f"[{style}]{finding.status:<4}[/{style}] "
+            f"[bold]{escape(finding.label)}[/bold]: {escape(finding.detail)}"
+        )
+    if not report.ok:
+        raise Exit(code=1)
 
 
 @task()

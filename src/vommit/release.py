@@ -156,13 +156,8 @@ def run_release(
         )
 
     git = config.active_git
-    commands = config.commands
     pypi = config.active_pypi
-    # `pypi.enabled = false` skips the publish phase, which projects rely on.
-    # An npm package or a crate has no PyPI phase to skip, so it publishes on
-    # `commands.publish` alone.
-    publish_phase = bool(pypi) or not project.publishes_to_pypi
-    steps = _plan(commands, publish_phase)
+    steps = planned_steps(config, project)
 
     if git:
         # both of these ask the same question: will the artifact that goes to
@@ -326,6 +321,18 @@ def _current_version(project: VersionSource) -> str:
             f"No version found in {project.manifest_name}; there is nothing to release."
         )
     return version
+
+
+def planned_steps(config: Config, project: VersionSource) -> tuple[Step, ...]:
+    """
+    The commands a release of `project` runs, in order.
+
+    `pypi.enabled = false` skips the publish phase, which projects rely on.
+    An npm package or a crate has no PyPI phase to skip, so it publishes on
+    `commands.publish` alone.
+    """
+    publishing = bool(config.active_pypi) or not project.publishes_to_pypi
+    return _plan(config.commands, publishing)
 
 
 def _plan(commands: CommandConfig | None, publishing: bool) -> tuple[Step, ...]:
