@@ -14,7 +14,7 @@ from ewok import Context, task
 from invoke import Exit
 from rich.markup import escape
 
-from . import licenses, npm
+from . import cargo, licenses, npm
 from .auth import (
     ENVIRONMENT,
     KEYRING,
@@ -41,7 +41,7 @@ from .bump import (
     select_level,
 )
 from .changelog import Changelog
-from .config import DERIVE_BRANCH, TOML_KEY, Config
+from .config import DERIVE_BRANCH, TOML_KEY, CommandConfig, Config
 from .editor import edit_entry
 from .errors import VommitError
 from .git import GitRepo
@@ -77,7 +77,13 @@ from .scaffold import (
 )
 from .shell import ContextRunner
 from .undo import UndoPlan, UndoResult, run_undo
-from .versioning import CargoProject, NpmProject, VersionSource, version_source
+from .versioning import (
+    CargoProject,
+    CrateProject,
+    NpmProject,
+    VersionSource,
+    version_source,
+)
 
 SetupMode = t.Literal["missing", "all"]
 MigrateChoice = t.Literal["interactive", "copy", "stop"]
@@ -473,7 +479,17 @@ def setup(
         # applies regardless of interactivity: a non-interactive setup gets no
         # prompt to override a bad default, so it needs the right one even more
         if isinstance(project, NpmProject):
-            _suggest_npm_defaults(config, present_paths, root)
+            needs_commands = config.commands is not None and (
+                present_paths is None
+                or any(
+                    f"commands.{name}" not in present_paths
+                    for name in ("build", "publish")
+                )
+            )
+            suggested = npm.suggested_commands(root) if needs_commands else None
+            _suggest_defaults(config, present_paths, suggested)
+        elif isinstance(project, CrateProject):
+            _suggest_defaults(config, present_paths, cargo.suggested_commands())
 
         if not non_interactive:
             if mode == "missing" and Config.is_complete(pyproject):
@@ -484,7 +500,8 @@ def setup(
                 config = Config.interactive(config, present_paths=present_paths)
 
         _write_config(c, config, root, pyproject, branch)
-        if ensure_uv_lock_ignored(root):
+        # an npm package or a crate is not a uv project, so has no uv.lock
+        if project.publishes_to_pypi and ensure_uv_lock_ignored(root):
             rich.print("[blue]Added uv.lock to .gitignore.[/blue]")
         # a crate-backed project keeps `dynamic = ["version"]` on purpose, so the
         # offer below, which exists to make [project].version bumpable, has
@@ -494,6 +511,8 @@ def setup(
         _report_build(root, pyproject, config, non_interactive, autofix)
         if isinstance(project, NpmProject):
             _offer_npm_token(runner, non_interactive)
+        elif isinstance(project, CrateProject):
+            _offer_cargo_login(runner, non_interactive)
 
 
 def _offer_npm_token(runner: ContextRunner, non_interactive: bool) -> None:
@@ -529,29 +548,52 @@ def _offer_npm_token(runner: ContextRunner, non_interactive: bool) -> None:
     rich.print(f"[green]Wrote a publish token to {npm.NPMRC}.[/green]")
 
 
-def _suggest_npm_defaults(
+def _offer_cargo_login(runner: ContextRunner, non_interactive: bool) -> None:
+    """
+    `_offer_npm_token` for a crate: silent once cargo has a credential,
+    otherwise says how to give it one, and offers to there and then.
+    """
+    if cargo.has_token():
+        return
+
+    rich.print(f"[yellow]{escape(cargo.token_instructions())}[/yellow]")
+    if non_interactive:
+        return
+
+    if not _confirm(
+        "Paste the token now to store it with `cargo login`?", yes=False, default=False
+    ):
+        return
+
+    token = questionary.password("crates.io token:").unsafe_ask()
+    token = (token or "").strip()
+    if not token:
+        rich.print("[yellow]No token entered; nothing stored.[/yellow]")
+        return
+
+    cargo.login(token, runner)
+    rich.print("[green]Stored the token with `cargo login`.[/green]")
+
+
+def _suggest_defaults(
     config: Config,
     present_paths: set[str] | None,
-    root: Path,
+    suggested: CommandConfig | None,
 ) -> None:
     """
-    Swap npm-flavored defaults into whichever of `commands.build`,
-    `commands.publish` and `pypi.enabled` the prompt is about to ask for. A
-    field already configured (named in `present_paths`) is left alone.
+    Swap a non-Python project's defaults into whichever of `commands.clean`,
+    `commands.build`, `commands.publish` and `pypi.enabled` the prompt is
+    about to ask for. A field already configured (named in `present_paths`)
+    is left alone.
 
     `pypi.enabled` used to be what let the publish step run at all, so it had
     to stay on for projects that had never touched PyPI. Publishing no longer
     depends on it (see `run_release`), so it can default off here.
     """
-    needs_build = present_paths is None or "commands.build" not in present_paths
-    needs_publish = present_paths is None or "commands.publish" not in present_paths
-    if config.commands is not None and (needs_build or needs_publish):
-        suggested = npm.suggested_commands(root)
-        if suggested is not None:
-            if needs_build:
-                config.commands.build = suggested.build
-            if needs_publish:
-                config.commands.publish = suggested.publish
+    if config.commands is not None and suggested is not None:
+        for name in ("clean", "build", "publish"):
+            if present_paths is None or f"commands.{name}" not in present_paths:
+                setattr(config.commands, name, getattr(suggested, name))
 
     if config.pypi is not None and (
         present_paths is None or "pypi.enabled" not in present_paths
@@ -567,6 +609,13 @@ def _report_version_source(source: VersionSource) -> bool:
     pyproject.toml, and a bump that edits a different file is a surprise the
     first time it happens.
     """
+    if isinstance(source, CrateProject):
+        rich.print(
+            f"[blue]The version comes from {source.manifest_name} "
+            f"({escape('`[package].version`')}), so that is what `vommit bump` "
+            "moves.[/blue]"
+        )
+        return False
     if not isinstance(source, CargoProject):
         return True
     rich.print(
@@ -1028,15 +1077,19 @@ def authenticate(_: Context, no_verify: bool = False, clear: bool = False) -> No
 
     For an npm-versioned project (see NpmProject) that means an `_authToken`
     line in ~/.npmrc, checked with a read-only `whoami` before it is written;
-    for everything else, a PyPI token in the keyring, exactly as before. Pass
-    --no-verify to skip that check, or --clear to drop the stored credential
-    before being asked for a new one.
+    for a crate (see CrateProject), whatever `cargo login` stores, which
+    cargo offers no way to check; for everything else, a PyPI token in the
+    keyring, exactly as before. Pass --no-verify to skip that check, or
+    --clear to drop the stored credential before being asked for a new one.
     """
     runner = ContextRunner(_)
     root = Path.cwd()
     with _reported():
-        if isinstance(version_source(runner, root), NpmProject):
+        project = version_source(runner, root)
+        if isinstance(project, NpmProject):
             _authenticate_npm(runner, no_verify=no_verify, clear=clear)
+        elif isinstance(project, CrateProject):
+            _authenticate_cargo(runner, clear=clear)
         else:
             _authenticate_pypi(no_verify=no_verify, clear=clear)
 
@@ -1071,6 +1124,32 @@ def _authenticate_npm(runner: ContextRunner, no_verify: bool, clear: bool) -> No
     rich.print(f"[green]Token stored in {npm.NPMRC}.[/green]")
 
 
+def _authenticate_cargo(runner: ContextRunner, clear: bool) -> None:
+    if clear:
+        rich.print(
+            "[yellow]Cleared the stored token.[/yellow]"
+            if cargo.logout(runner)
+            else "[yellow]No stored token to clear.[/yellow]"
+        )
+
+    if not sys.stdin.isatty():
+        raise VommitError(
+            "No terminal to ask for a crates.io token on; run `cargo login` "
+            f"or provide {cargo.TOKEN_VAR} instead."
+        )
+    rich.print(f"[blue]{escape(cargo.TOKEN_ADVICE)}[/blue]")
+    lead = (
+        "Replace the stored crates.io token"
+        if cargo.stored_token_file()
+        else "crates.io token"
+    )
+    answer = questionary.password(f"{lead} (input hidden):").unsafe_ask()
+    if not answer:
+        raise VommitError("No token entered.")
+    cargo.login(str(answer), runner)
+    rich.print("[green]Token stored with `cargo login`.[/green]")
+
+
 def _ask_npm_token(replacing: bool) -> str:
     if not sys.stdin.isatty():
         raise VommitError(
@@ -1092,7 +1171,8 @@ def ensure_authenticated(_: Context, show: bool = False) -> None:
     Make sure a publish credential is available, asking only when there is none.
 
     For an npm-versioned project that means an `_authToken` line in
-    ~/.npmrc; for everything else, a PyPI token, exactly as before. Usable
+    ~/.npmrc; for a crate, `CARGO_REGISTRY_TOKEN` or a token `cargo login`
+    stored; for everything else, a PyPI token, exactly as before. Usable
     as a `pre` task; `release` calls the same resolution in-process, so
     that a `--noop` run is not stopped for a credential it will never use.
     Pass --show to see which one that is and where it came from.
@@ -1104,7 +1184,16 @@ def ensure_authenticated(_: Context, show: bool = False) -> None:
     runner = ContextRunner(_)
     root = Path.cwd()
     with _reported():
-        if isinstance(version_source(runner, root), NpmProject):
+        project = version_source(runner, root)
+        if isinstance(project, CrateProject):
+            if not (origin := cargo.token_source()):
+                raise VommitError(cargo.token_instructions())
+            if show:
+                rich.print(f"[green]crates.io token[/green] from {escape(origin)}.")
+            else:
+                rich.print("[green]crates.io token available.[/green]")
+            return
+        if isinstance(project, NpmProject):
             if not npm.has_auth_token():
                 raise VommitError(
                     f"No npm/bun token found in {npm.NPMRC}; run `vommit "

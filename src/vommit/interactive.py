@@ -17,6 +17,9 @@ DeriveDefaultSpec = t.TypedDict(
 class AnnotatedMeta(t.TypedDict, total=False):
     label: str | None
     interactive: bool
+    # an emptied answer means "nothing" rather than "the default"; see
+    # `_empty_answer`
+    allow_empty: bool
     derive_default: DeriveDefaultSpec
 
 
@@ -81,6 +84,7 @@ def _ask_for_value(
     default: t.Any,
     step: int,
     total_steps: int,
+    allow_empty: bool = False,
 ) -> t.Any:
     origin = t.get_origin(field_type)
     if origin is t.Literal:
@@ -110,14 +114,38 @@ def _ask_for_value(
     raw = (raw or "").strip()
 
     if raw == "":
-        if has_default:
-            return default
-        raise ValueError(f"Field '{field_name}' is required and cannot be empty.")
+        return _empty_answer(field_name, field_type, has_default, default, allow_empty)
 
     try:
         return _parse_scalar(field_type, raw)
     except ValueError as exc:
         raise ValueError(f"Invalid value for field '{field_name}': {exc}") from exc
+
+
+def _empty_answer(
+    field_name: str,
+    field_type: t.Any,
+    has_default: bool,
+    default: t.Any,
+    allow_empty: bool,
+) -> t.Any:
+    """
+    What an answer cleared down to nothing stands for.
+
+    The prompt starts out holding the default, so an empty answer is never
+    an accident: someone deleted it. Where the field can hold "nothing", that
+    is what they asked for: a command marked `allow_empty` left empty to skip
+    it, or an optional format such as `git.tag_format` emptied to disable it.
+    Falling back to the default there made those answers impossible to give.
+
+    "" rather than None for the optional ones too: None is never written to
+    pyproject.toml, so the next load would bring the default straight back.
+    """
+    if allow_empty or (is_optional(field_type) and str in t.get_args(field_type)):
+        return ""
+    if has_default:
+        return default
+    raise ValueError(f"Field '{field_name}' is required and cannot be empty.")
 
 
 def _select_literal(
@@ -336,6 +364,7 @@ def _interactive_build[ConfigT: TypedConfig](
             default,
             prompt_step,
             total_scalar_fields,
+            allow_empty=bool((field.meta or {}).get("allow_empty")),
         )
         if (
             enabled_field

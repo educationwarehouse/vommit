@@ -31,7 +31,7 @@ from .editor import EntryEditor
 from .errors import VommitError
 from .git import GitRepo
 from .shell import CommandResult, Runner, shell
-from .versioning import NpmProject, VersionSource, version_source
+from .versioning import VersionSource, version_source
 
 CLEAN = "clean"
 BUILD = "build"
@@ -159,9 +159,9 @@ def run_release(
     commands = config.commands
     pypi = config.active_pypi
     # `pypi.enabled = false` skips the publish phase, which projects rely on.
-    # An npm project has no PyPI phase to skip, so it publishes on
+    # An npm package or a crate has no PyPI phase to skip, so it publishes on
     # `commands.publish` alone.
-    publish_phase = bool(pypi) or isinstance(project, NpmProject)
+    publish_phase = bool(pypi) or not project.publishes_to_pypi
     steps = _plan(commands, publish_phase)
 
     if git:
@@ -173,10 +173,10 @@ def run_release(
 
     # resolved before the first write: finding out afterwards that there is no
     # token leaves a pushed release with nothing on PyPI. Gated on the project
-    # and not on `pypi`, which defaults to true even for an npm project, whose
-    # publish authenticates through `.npmrc` and never sees this token.
+    # and not on `pypi`, which defaults to true even for an npm project or a
+    # crate, whose publish authenticates its own way and never sees this token.
     publishing = any(step.name == PUBLISH for step in steps)
-    needs_pypi_token = bool(pypi) and not isinstance(project, NpmProject)
+    needs_pypi_token = bool(pypi) and project.publishes_to_pypi
     token = (
         authenticate() if needs_pypi_token and publishing and not request.noop else None
     )

@@ -21,6 +21,11 @@ PYPROJECT = "pyproject.toml"
 CARGO = "Cargo.toml"
 PACKAGE_JSON = "package.json"
 
+# What `[tool.vommit].version_source` may name, to settle a project that states
+# a version in more than one of them.
+VersionSourceName = t.Literal["pyproject.toml", "Cargo.toml", "package.json"]
+VERSION_SOURCES: tuple[VersionSourceName, ...] = t.get_args(VersionSourceName)
+
 # what to indent `package.json` by when the file gives nothing to go on
 DEFAULT_JSON_INDENT = 2
 
@@ -214,6 +219,10 @@ class VersionSource(abc.ABC):
     # The lockfile that records it a second time, relative to `root`, or None
     # for a backend that manages none (see `NpmProject`).
     lockfile_name: t.ClassVar[str | None]
+    # Whether what gets released is a Python distribution, uploaded with a
+    # PyPI token. A backend with a registry of its own authenticates its own
+    # way, and its release must neither need `pypi.enabled` nor ask for one.
+    publishes_to_pypi: t.ClassVar[bool] = True
 
     @property
     def manifest(self) -> Path:
@@ -478,6 +487,19 @@ class CargoProject(SemVerProject):
 
 
 @dc.dataclass(frozen=True)
+class CrateProject(CargoProject):
+    """
+    A Rust crate released on its own, to crates.io rather than as a wheel.
+
+    The version handling is `CargoProject`'s; only where it goes differs.
+    `cargo publish` authenticates with cargo's own credentials, so there is no
+    PyPI token to resolve.
+    """
+
+    publishes_to_pypi: t.ClassVar[bool] = False
+
+
+@dc.dataclass(frozen=True)
 class NpmProject(SemVerProject):
     """
     A project whose version is `.version` in `package.json`.
@@ -491,6 +513,7 @@ class NpmProject(SemVerProject):
     manifest_name: t.ClassVar[str] = PACKAGE_JSON
     lockfile_name: t.ClassVar[str | None] = None
     missing_version: t.ClassVar[str] = ".version"
+    publishes_to_pypi: t.ClassVar[bool] = False
 
     def version_in(self, manifest: str) -> str | None:
         version = self._declared_version(manifest)
@@ -552,13 +575,14 @@ def version_source(runner: Runner, root: Path) -> VersionSource:
     """
     Where this project keeps the version vommit is asked to move.
 
-    `Cargo.toml` wins only for the one shape that leaves uv nothing to work
+    `[tool.vommit].version_source` decides outright when it is set. Otherwise
+    `Cargo.toml` wins first for the one shape that leaves uv nothing to work
     with: a maturin build whose `pyproject.toml` declares the version dynamic.
     A real `[project].version` wins next: that is still what gets built, for a
     Python package vendoring a crate or carrying a frontend's `package.json`.
-    `package.json` gets a look in only once neither states a version, which is
-    what resolves a project whose `pyproject.toml` is a `[tool.vommit]` stanza
-    and nothing else.
+    `package.json` and a plain crate's `Cargo.toml` get a look in only once
+    neither states a version, which is what resolves a project whose
+    `pyproject.toml` is a `[tool.vommit]` stanza and nothing else.
     """
     pyproject = root / PYPROJECT
     cargo = CargoProject(
@@ -566,16 +590,56 @@ def version_source(runner: Runner, root: Path) -> VersionSource:
         root=root,
         manifest_path=_maturin_manifest(pyproject),
     )
+    uv_project = UvProject(runner=runner, root=root)
+    npm_project = NpmProject(runner=runner, root=root)
+    # a crate only when no Python package is being built here: a dynamic
+    # `[project].version` that is not maturin's belongs to some other backend
+    crate = (
+        None
+        if _has_project_table(pyproject)
+        else CrateProject(runner=runner, root=root)
+    )
+
+    match _configured_source(pyproject):
+        case "pyproject.toml":
+            return uv_project
+        case "package.json":
+            return npm_project
+        case "Cargo.toml":
+            return (
+                cargo
+                if _is_maturin(pyproject)
+                else CrateProject(runner=runner, root=root)
+            )
+        case str(other):
+            # a typo would otherwise fall back to guessing, which is exactly
+            # what setting this was meant to stop
+            raise VommitError(
+                f"`version_source = {other!r}` is not one vommit knows; use "
+                f"one of {', '.join(VERSION_SOURCES)}."
+            )
+
     if _is_dynamic_maturin(pyproject) and cargo.current_version():
         return cargo
 
-    uv_project = UvProject(runner=runner, root=root)
     if uv_project.current_version() is not None:
         return uv_project
 
-    npm_project = NpmProject(runner=runner, root=root)
-    if npm_project.current_version() is not None:
-        return npm_project
+    stated = [
+        source
+        for source in (npm_project, crate)
+        if source is not None and source.current_version() is not None
+    ]
+    if len(stated) > 1:
+        names = " and ".join(source.manifest_name for source in stated)
+        raise VommitError(
+            f"Both {names} state a version, and vommit cannot tell which one "
+            "this project releases. Choose one under [tool.vommit] in "
+            'pyproject.toml, e.g. `version_source = "Cargo.toml"`.'
+        )
+    if stated:
+        return stated[0]
+
     if unsupported := npm_project.unsupported_version():
         # falling through reports "no version in pyproject.toml", the wrong
         # file for a project that plainly states one
@@ -587,6 +651,28 @@ def version_source(runner: Runner, root: Path) -> VersionSource:
         )
 
     return uv_project
+
+
+def _configured_source(pyproject: Path) -> str | None:
+    """
+    `[tool.vommit].version_source`, read straight from the file.
+
+    Not through `Config`: that module imports this one, and this is the only
+    setting the answer depends on.
+    """
+    if not pyproject.exists():
+        return None
+    document = tomlkit.parse(pyproject.read_text())
+    tool = document.get("tool")
+    vommit = tool.get("vommit") if isinstance(tool, dict) else None
+    configured = vommit.get("version_source") if isinstance(vommit, dict) else None
+    return str(configured) if configured else None
+
+
+def _has_project_table(pyproject: Path) -> bool:
+    if not pyproject.exists():
+        return False
+    return isinstance(tomlkit.parse(pyproject.read_text()).get("project"), dict)
 
 
 def _maturin_manifest(pyproject: Path) -> Path | None:
@@ -610,8 +696,15 @@ def _is_dynamic_maturin(pyproject: Path) -> bool:
     dynamic = project.get("dynamic", []) if isinstance(project, dict) else []
     if "version" not in [str(entry) for entry in dynamic]:
         return False
+    return _is_maturin(pyproject)
 
-    build_system = document.get("build-system")
+
+def _is_maturin(pyproject: Path) -> bool:
+    """
+    Whether maturin builds this project; `pyproject` has to exist, which both
+    callers know already (one checked, the other read a setting out of it).
+    """
+    build_system = tomlkit.parse(pyproject.read_text()).get("build-system")
     backend = (
         str(build_system.get("build-backend", ""))
         if isinstance(build_system, dict)

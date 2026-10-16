@@ -55,7 +55,7 @@ def ledger(sandbox: Sandbox) -> list[str]:
 
 
 def fail_if_called() -> str:
-    raise AssertionError("authenticate() should not run for an npm project")
+    raise AssertionError("authenticate() should not run for a non-PyPI project")
 
 
 def release(
@@ -400,6 +400,56 @@ def test_an_npm_project_never_resolves_a_pypi_token(sandbox):
     # published, and nothing was ever asked for a PyPI token to do it
     assert result.published is True
     assert TOKEN not in ledger(sandbox)
+
+
+# --- a crate released to crates.io, independent of pypi -----------------------
+
+
+def as_crate_project(sandbox: Sandbox, version: str = "0.1.0") -> None:
+    """
+    `as_npm_project`, with a `Cargo.toml` stating the version instead, which
+    is what makes `version_source` pick `CrateProject`.
+    """
+    pyproject = sandbox.work / "pyproject.toml"
+    document = tomlkit.parse(pyproject.read_text())
+    document.pop("project", None)
+    document.pop("build-system", None)
+    pyproject.write_text(tomlkit.dumps(document))
+    sandbox.write(
+        "Cargo.toml",
+        f'[package]\nname = "sandbox"\nversion = "{version}"\nedition = "2021"\n',
+    )
+    sandbox.commit("chore: convert to a crate")
+
+
+def test_a_crate_publishes_with_pypi_disabled_and_no_pypi_token(sandbox):
+    """
+    The same two promises an npm project gets: `cargo publish` is the publish
+    step whatever `pypi.enabled` says, and it authenticates with cargo's own
+    credentials, so no PyPI token is resolved for it.
+    """
+    with_pipeline(sandbox)
+    sandbox.set_config("tool.vommit.pypi", enabled=False)
+    as_crate_project(sandbox)
+    sandbox.commits("feat: something releasable")
+
+    result = release(sandbox, authenticate=fail_if_called)
+
+    assert ledger(sandbox) == ["clean", "build", "publish"]
+    assert result.published is True
+    assert result.version == "0.2.0"
+    assert 'version = "0.2.0"' in (sandbox.work / "Cargo.toml").read_text()
+
+
+def test_a_crate_never_resolves_a_pypi_token_even_with_pypi_enabled(sandbox):
+    with_pipeline(sandbox)
+    with_pypi(sandbox)
+    as_crate_project(sandbox)
+    sandbox.commits("feat: something releasable")
+
+    result = release(sandbox, authenticate=fail_if_called)
+
+    assert result.published is True
 
 
 def test_a_config_without_any_commands_only_bumps_and_pushes(sandbox):

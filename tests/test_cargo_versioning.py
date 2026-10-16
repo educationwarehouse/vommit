@@ -245,7 +245,6 @@ def test_version_source_honors_a_configured_manifest_path(tmp_path):
 @pytest.mark.parametrize(
     "reason, pyproject, version",
     [
-        ("no pyproject at all", None, "1.0.0"),
         (
             "a static version uv can bump itself",
             '[project]\nname = "crate"\nversion = "1.0.0"\n\n[build-system]\n'

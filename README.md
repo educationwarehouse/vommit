@@ -7,8 +7,9 @@ publishing for uv-based Python packages using Conventional Commits.
 
 Vommit requires Python 3.12 or newer, [uv](https://docs.astral.sh/uv/) 0.7 or
 newer, and a static `[project].version` in `pyproject.toml`, or, for a project
-built by maturin, a version in `Cargo.toml` (see
-[Crate-backed projects](#crate-backed-projects-maturin)). Automatic version
+built by maturin or a crate published to crates.io, a version in `Cargo.toml`
+(see [Crate-backed projects](#crate-backed-projects-maturin) and
+[Crates](#crates-cratesio)). Automatic version
 selection and the default release workflow also expect a Git repository, but
 this can be disabled via config.
 
@@ -256,6 +257,41 @@ plans `3.11.0rc1`, writes `3.11.0-rc.1`, and maturin builds
 which SemVer cannot express, are refused before anything is written rather
 than published under a different number.
 
+#### Crates (crates.io)
+
+A Rust crate released on its own is recognised the same way: `Cargo.toml`
+states `[package].version` and `pyproject.toml` has no `[project]` table, only
+the `[tool.vommit]` configuration (or there is no `pyproject.toml` at all).
+Vommit bumps `[package].version`, relocks `Cargo.lock` when there is one, and
+converts versions exactly as for maturin. Only a single crate is supported; a
+workspace version in `[workspace.package]` is not.
+
+`setup` suggests commands for it and switches `pypi.enabled` off:
+
+```toml
+[tool.vommit.commands]
+clean = ""                # `cargo clean` would throw away the build cache
+build = "cargo package"   # verify-builds the crate before anything is pushed
+publish = "cargo publish"
+```
+
+`cargo build --release` is not suggested: crates.io receives source, not a
+binary, and `cargo publish` verifies in the dev profile, so a release build
+would be work nobody uses. `cargo package` catches a crate that would not
+publish while `vommit bump --undo` can still take the version back.
+
+`cargo publish` authenticates with cargo's own credentials, never a PyPI token.
+`vommit authenticate` stores one through `cargo login`; `ensure-authenticated`
+accepts that or `CARGO_REGISTRY_TOKEN` in the environment.
+
+When both `Cargo.toml` and `package.json` state a version, Vommit refuses to
+guess which one is released. Name it:
+
+```toml
+[tool.vommit]
+version_source = "Cargo.toml"   # or "package.json", or "pyproject.toml"
+```
+
 #### Build checks
 
 `setup` also reports what would go wrong at build time, because `build` runs
@@ -337,6 +373,7 @@ The most useful settings to revisit are:
 | `pypi.enabled`, `pypi.use_keyring`                                              | Control publishing and credential storage.                                                                                            |
 | `commands.clean`, `commands.build`, `commands.publish`, `commands.post_publish` | Define the release pipeline commands.                                                                                                 |
 | `ignore`                                                                        | Silence build checks by id (see [Build checks](#build-checks)).                                                                       |
+| `version_source`                                                                | Name the file holding the version when more than one states it (see [Crates](#crates-cratesio)).                                      |
 
 ## Migrating from python-semantic-release v7
 

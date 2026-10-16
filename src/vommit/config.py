@@ -17,7 +17,7 @@ from .commits import (
 )
 from .helpers import read_toml
 from .interactive import InteractiveConfig
-from .versioning import DEFAULT_PRERELEASE_TOKEN, PrereleaseToken
+from .versioning import DEFAULT_PRERELEASE_TOKEN, PrereleaseToken, VersionSourceName
 
 TOML_KEY = "tool.vommit"
 
@@ -349,11 +349,19 @@ class CommandConfig(TypedConfig, Defaultable):
     `clean = ""` rather than finding a command that does nothing.
     """
 
-    clean: t.Annotated[str, "Clean command (empty to skip)"] = "rm -rf ./dist"
-    build: t.Annotated[str, "Build command (empty to skip)"] = "uv build"
-    publish: t.Annotated[str, "Publish command (empty to skip)"] = "uv publish"
+    clean: t.Annotated[str, "Clean command (empty to skip)", {"allow_empty": True}] = (
+        "rm -rf ./dist"
+    )
+    build: t.Annotated[str, "Build command (empty to skip)", {"allow_empty": True}] = (
+        "uv build"
+    )
+    publish: t.Annotated[
+        str, "Publish command (empty to skip)", {"allow_empty": True}
+    ] = "uv publish"
     # runs only when `publish` did, so it can assume there is something to tidy
-    post_publish: t.Annotated[str, "Command to run after publishing"] = ""
+    post_publish: t.Annotated[
+        str, "Command to run after publishing (empty to skip)", {"allow_empty": True}
+    ] = ""
 
 
 def _if_enabled[SectionT: TypedConfig](section: SectionT | None) -> SectionT | None:
@@ -393,6 +401,16 @@ class Config(InteractiveConfig, Defaultable):
     # check: the checks keep coming, and a table of `warn-x = false` keys grows
     # one entry per check whether or not anyone cares about it.
     ignore: list[str] = []
+
+    # Which file holds the version, for the rare project where more than one
+    # states one (a crate with a `package.json` beside it). Read by
+    # `versioning.version_source`; unset, that works it out by itself. Not
+    # asked for, for the same reason as `git.commit_author`.
+    version_source: t.Annotated[
+        VersionSourceName | None,
+        "File holding the version (empty to detect it)",
+        {"interactive": False},
+    ] = None
 
     # `docs` is deliberately absent: a documentation-only change is not worth a
     # release. A project that wants one adds `docs = "patch"` to this table;
