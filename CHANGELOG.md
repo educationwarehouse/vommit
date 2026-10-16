@@ -2,6 +2,11 @@
 
 <!-- next-version-placeholder -->
 
+## v0.10.0 (2026-10-16)
+
+### Feature
+* **release:** add project checks and support Cargo workspaces
+
 ## v0.9.0 (2026-10-16)
 
 ### Feature
