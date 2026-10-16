@@ -1,3 +1,5 @@
+import os
+import subprocess
 import time
 
 import invoke
@@ -5,7 +7,14 @@ import pytest
 from invoke.exceptions import ThreadException
 from invoke.util import ExceptionWrapper
 
-from src.vommit.shell import CommandResult, ContextRunner, LocalRunner, bash, shell
+from src.vommit.shell import (
+    Capture,
+    CommandResult,
+    ContextRunner,
+    LocalRunner,
+    bash,
+    shell,
+)
 
 
 class FakeInvokeResult:
@@ -279,3 +288,50 @@ def test_local_runner_catches_an_indented_prompt():
 
     assert result.ok is False
     assert "interactive authentication" in result.stderr
+
+
+def drained(capture: Capture, output: bytes) -> list[bytes]:
+    """
+    Runs one reader over a pipe holding `output`, as `Capture.run` would.
+
+    Called directly rather than through a running process: the two branches
+    this exercises depend on which of two reader threads gets somewhere first,
+    which a real process only produces some of the time.
+    """
+    read_end, write_end = os.pipe()
+    os.write(write_end, output)
+    os.close(write_end)
+    chunks: list[bytes] = []
+    capture._drain(os.fdopen(read_end, "rb"), chunks)
+    return chunks
+
+
+def finished_process() -> subprocess.Popen[bytes]:
+    process = subprocess.Popen(["true"], start_new_session=True)
+    process.wait()
+    return process
+
+
+def test_drain_keeps_reading_once_the_other_reader_has_aborted():
+    """
+    The process is already being killed, so a prompt here is not reported
+    again, but its output is still captured: it is what the error shows.
+    """
+    capture = Capture(finished_process())
+    capture.aborted = True
+
+    chunks = drained(capture, b"Enter one-time password:")
+
+    assert b"".join(chunks) == b"Enter one-time password:"
+
+
+def test_drain_tolerates_a_process_group_that_is_already_gone():
+    """
+    By the time a prompt is seen, the other reader may have killed the group
+    already, or the process exited on its own; neither is an error.
+    """
+    capture = Capture(finished_process())
+
+    drained(capture, b"Enter one-time password:")
+
+    assert capture.aborted is True
