@@ -2,6 +2,11 @@
 
 <!-- next-version-placeholder -->
 
+## v0.11.0 (2026-11-21)
+
+### Feature
+* **cargo:** sync internal dependency versions on workspace bumps
+
 ## v0.10.0 (2026-10-16)
 
 ### Feature
