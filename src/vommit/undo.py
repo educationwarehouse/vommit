@@ -33,6 +33,9 @@ class UndoPlan:
     # to a file this release never touched.
     manifest: str = PYPROJECT
     lockfile: str | None = LOCKFILE
+    # member manifests a Cargo workspace bump moved its internal dependency
+    # versions in, staged alongside the manifest
+    members: tuple[str, ...] = ()
 
     @property
     def rewinds_history(self) -> bool:
@@ -44,6 +47,7 @@ class UndoPlan:
             return ()
         written = (
             self.manifest,
+            *self.members,
             self.lockfile,
             str(self.changelog_path) if self.changelog_path else None,
         )
@@ -106,6 +110,7 @@ def plan_undo(
         changelog_path=_entry_to_remove(config, root, version) if not commit else None,
         manifest=manifest,
         lockfile=project.lockfile_name,
+        members=tuple(project.written_files()[1:]),
     )
 
 

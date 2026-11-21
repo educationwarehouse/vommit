@@ -258,6 +258,15 @@ class VersionSource(abc.ABC):
         Write what `uv version <args>` produces, and return it.
         """
 
+    def written_files(self) -> list[str]:
+        """
+        Every file besides the lockfile that a bump writes, relative to `root`.
+
+        What a bump refuses to clobber when dirty, what it stages, and what an
+        undo of an uncommitted bump unstages again.
+        """
+        return [self.manifest_name]
+
     def preview_bump(
         self,
         level: VersionBump,
@@ -471,10 +480,104 @@ class CargoProject(SemVerProject):
             )
         table["version"] = semver
         self.manifest.write_text(tomlkit.dumps(document))
+        self._sync_internal_requirements(semver)
 
     def _after_write(self, frozen: bool) -> None:
         if not frozen:
             self._relock()
+
+    def written_files(self) -> list[str]:
+        """
+        The manifest, plus each member manifest whose dependencies on its
+        siblings carry the shared version.
+        """
+        lockstep = self._lockstep_crates()
+        members = [
+            relative_path(manifest, self.root)
+            for manifest in self._manifests()[1:]
+            if _internal_requirements(manifest, lockstep)
+        ]
+        return [self.manifest_name, *members]
+
+    def _sync_internal_requirements(self, semver: str) -> None:
+        """
+        Move every versioned path dependency on a crate that shares the release
+        version to that version, the way `cargo set-version` does.
+
+        crates.io demands a version on each path dependency of a published
+        crate, and Cargo has no way to inherit it from the workspace, so
+        `cli = { path = "../core", version = "0.2.0" }` stops resolving the
+        moment `core` becomes 0.3.0. Only the version is rewritten; an operator
+        in front of it (`=`, `~`, `^`, `>=`) is kept. A path dependency without
+        a version, with a multi-part range, or on a crate with a version of its
+        own is left alone.
+        """
+        lockstep = self._lockstep_crates()
+        for manifest in self._manifests():
+            document = tomlkit.parse(manifest.read_text())
+            changed = False
+            for entry in _internal_requirements(manifest, lockstep, document):
+                current = str(entry["version"])
+                if "," in current:
+                    # a range is a choice somebody made on purpose
+                    continue
+                operator = current[: len(current) - len(current.lstrip("=^~<> "))]
+                wanted = f"{operator}{semver}"
+                if current != wanted:
+                    entry["version"] = wanted
+                    changed = True
+            if changed:
+                manifest.write_text(tomlkit.dumps(document))
+
+    def _manifests(self) -> list[Path]:
+        """
+        The root manifest first, then every workspace member's.
+
+        Members are found the way Cargo finds them: `[workspace].members`
+        globs, minus `exclude`, keeping only directories with a `Cargo.toml`.
+        """
+        if not self.manifest.exists():
+            return []
+        document = tomlkit.parse(self.manifest.read_text())
+        workspace = document.get("workspace")
+        if not isinstance(workspace, dict):
+            return [self.manifest]
+
+        # globbed from the manifest's own spelling, so members stay relative
+        # to `root` for staging; compared resolved, so `..` and symlinks match
+        base = self.manifest.parent
+        skipped = {base.resolve()} | {
+            (base / str(path)).resolve() for path in workspace.get("exclude", [])
+        }
+        found: list[Path] = []
+        for pattern in workspace.get("members", []):
+            for directory in sorted(base.glob(str(pattern))):
+                manifest = directory / CARGO
+                if (
+                    directory.resolve() not in skipped
+                    and manifest.is_file()
+                    and manifest not in found
+                ):
+                    found.append(manifest)
+        return [self.manifest, *found]
+
+    def _lockstep_crates(self) -> set[Path]:
+        """
+        The directories of the crates whose version is the one being released:
+        the root package when it is the source, and every crate inheriting
+        `[workspace.package].version`.
+        """
+        crates: set[Path] = set()
+        for manifest in self._manifests():
+            package = tomlkit.parse(manifest.read_text()).get("package")
+            if not isinstance(package, dict):
+                continue
+            version = package.get("version")
+            inherits = isinstance(version, dict) and version.get("workspace") is True
+            is_source = manifest == self.manifest and isinstance(version, str)
+            if inherits or is_source:
+                crates.add(manifest.parent.resolve())
+        return crates
 
     def _relock(self) -> None:
         """
@@ -593,6 +696,52 @@ def _cargo_version_table(document: t.Any) -> t.Any | None:
     if isinstance(shared, dict) and isinstance(shared.get("version"), str):
         return shared
     return None
+
+
+DEPENDENCY_TABLES = ("dependencies", "dev-dependencies", "build-dependencies")
+
+
+def _internal_requirements(
+    manifest: Path, lockstep: set[Path], document: t.Any | None = None
+) -> list[t.Any]:
+    """
+    The dependency entries in `manifest` that point by path at a crate in
+    `lockstep` and state a version for it.
+
+    Covers `[dependencies]` and its dev and build siblings, their
+    `[target.<cfg>]` forms, and `[workspace.dependencies]`. Paths resolve from
+    the manifest's own directory, which is also where Cargo resolves them for
+    `[workspace.dependencies]`.
+    """
+    if not lockstep:
+        return []
+    if document is None:
+        document = tomlkit.parse(manifest.read_text())
+
+    tables: list[t.Any] = [document.get(name) for name in DEPENDENCY_TABLES]
+    targets = document.get("target")
+    if isinstance(targets, dict):
+        for target in targets.values():
+            if isinstance(target, dict):
+                tables += [target.get(name) for name in DEPENDENCY_TABLES]
+    workspace = document.get("workspace")
+    if isinstance(workspace, dict):
+        tables.append(workspace.get("dependencies"))
+
+    base = manifest.parent
+    entries = []
+    for table in tables:
+        if not isinstance(table, dict):
+            continue
+        for entry in table.values():
+            if (
+                isinstance(entry, dict)
+                and isinstance(entry.get("path"), str)
+                and isinstance(entry.get("version"), str)
+                and (base / entry["path"]).resolve() in lockstep
+            ):
+                entries.append(entry)
+    return entries
 
 
 def _json_indent(raw: str) -> int | str:

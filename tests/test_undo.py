@@ -1,6 +1,7 @@
 import datetime as dt
 
 import pytest
+import tomlkit
 
 from src.vommit.bump import BumpRequest, run_bump
 from src.vommit.config import Config
@@ -295,3 +296,80 @@ def test_undo_when_no_changelog_file_was_ever_written(sandbox):
     assert result.plan.changelog_path is None
     assert not (sandbox.work / "CHANGELOG.md").exists()
     assert version_of(sandbox) == "0.1.0"
+
+
+# --- a Cargo workspace whose crates depend on each other by path -------------
+
+WORKSPACE = (
+    '[workspace]\nmembers = ["crates/*"]\n\n[workspace.package]\nversion = "0.1.0"\n'
+)
+CORE = '[package]\nname = "core"\nversion.workspace = true\n'
+CLI = (
+    '[package]\nname = "cli"\nversion.workspace = true\n\n'
+    '[dependencies]\ncore = { version = "0.1.0", path = "../core" }\n'
+)
+
+
+def as_cargo_workspace(sandbox: Sandbox) -> None:
+    """
+    No `Cargo.lock`, so nothing here needs cargo itself.
+    """
+    pyproject = sandbox.work / "pyproject.toml"
+    document = tomlkit.parse(pyproject.read_text())
+    document.pop("project", None)
+    document.pop("build-system", None)
+    pyproject.write_text(tomlkit.dumps(document))
+    sandbox.write("Cargo.toml", WORKSPACE)
+    sandbox.write("crates/core/Cargo.toml", CORE)
+    sandbox.write("crates/cli/Cargo.toml", CLI)
+    sandbox.commit("chore: convert to a cargo workspace")
+
+
+def cli_manifest(sandbox: Sandbox) -> str:
+    return (sandbox.work / "crates" / "cli" / "Cargo.toml").read_text()
+
+
+def test_a_workspace_release_commits_the_member_manifests_it_moved(sandbox):
+    as_cargo_workspace(sandbox)
+    sandbox.commits("feat: something new")
+
+    bump(sandbox)
+
+    assert 'core = { version = "0.2.0", path = "../core" }' in cli_manifest(sandbox)
+    assert sandbox.status() == []
+    assert sandbox.log(1) == ["0.2.0"]
+
+    undo(sandbox)
+
+    assert cli_manifest(sandbox) == CLI
+
+
+def test_undo_unstages_the_member_manifests_of_an_uncommitted_release(sandbox):
+    as_cargo_workspace(sandbox)
+    sandbox.write(
+        "pyproject.toml",
+        (sandbox.work / "pyproject.toml")
+        .read_text()
+        .replace('tag_format = "v{version}"', 'tag_format = ""')
+        .replace('commit_format = "{version}"', 'commit_format = ""'),
+    )
+    sandbox.commit("chore: stop committing releases")
+    sandbox.commits("feat: something new")
+
+    bump(sandbox)
+    assert "M  crates/cli/Cargo.toml" in sandbox.status()
+
+    result = undo(sandbox)
+
+    assert result.plan.members == ("crates/cli/Cargo.toml",)
+    assert cli_manifest(sandbox) == CLI
+    assert sandbox.status() == ["?? CHANGELOG.md"]
+
+
+def test_a_workspace_bump_refuses_a_dirty_member_manifest(sandbox):
+    as_cargo_workspace(sandbox)
+    sandbox.commits("feat: something new")
+    sandbox.write("crates/cli/Cargo.toml", CLI + "# local edit\n")
+
+    with pytest.raises(VommitError, match="crates/cli/Cargo.toml"):
+        bump(sandbox)

@@ -218,7 +218,7 @@ def run_bump(
             next_version, config.commit_entries(commit_messages), today
         )
 
-    touched = [project.manifest_name]
+    touched = project.written_files()
     if update:
         touched.append(relative_path(update.path, root))
 

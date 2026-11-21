@@ -236,3 +236,149 @@ def test_a_single_crate_is_not_a_workspace(tmp_path):
 
 def test_a_missing_manifest_is_not_a_workspace(tmp_path):
     assert CrateProject(runner=LocalRunner(), root=tmp_path).is_workspace is False
+
+
+# --- path dependencies between crates that share the version -----------------
+
+LOCKSTEP_ROOT = (
+    '[package]\nname = "app"\nversion.workspace = true\n\n'
+    '[dependencies]\ncore = {{ version = "0.2.0", path = "crates/core" }}\n'
+    'pinned = {{ version = "=0.2.0", path = "crates/pinned" }}\n\n'
+    '[workspace]\nmembers = ["crates/*"]\nexclude = ["crates/outside"]\n\n'
+    '[workspace.package]\nversion = "{version}"\n\n'
+    '[workspace.dependencies]\ncore = {{ version = "0.2", path = "crates/core" }}\n'
+)
+CORE = '[package]\nname = "core"\nversion.workspace = true\n'
+PINNED = '[package]\nname = "pinned"\nversion.workspace = true\n'
+CLI = (
+    '[package]\nname = "cli"\nversion.workspace = true\n\n'
+    "[dependencies]\n"
+    '# a comment that has to survive\ncore = { version = "^0.2.0", path = "../core" }\n'
+    'loose = { path = "../loose" }\n'
+    'own = { version = "1.0.0", path = "../own" }\n'
+    'ranged = { version = ">=0.2, <0.4", path = "../ranged" }\n'
+    'serde = "1"\n\n'
+    "[dev-dependencies]\n"
+    'pinned = { version = "=0.2.0", path = "../pinned" }\n\n'
+    "[target.'cfg(unix)'.build-dependencies]\n"
+    'core = { version = "~0.2.0", path = "../core" }\n'
+)
+LOOSE = '[package]\nname = "loose"\nversion.workspace = true\n'
+OWN = '[package]\nname = "own"\nversion = "1.0.0"\n'
+RANGED = '[package]\nname = "ranged"\nversion.workspace = true\n'
+OUTSIDE = (
+    '[package]\nname = "outside"\nversion = "0.2.0"\n\n'
+    '[dependencies]\ncore = { version = "0.2.0", path = "../core" }\n'
+)
+
+
+def lockstep(root, version="0.2.0"):
+    (root / "pyproject.toml").write_text(STANZA)
+    (root / "Cargo.toml").write_text(LOCKSTEP_ROOT.format(version=version))
+    members = {
+        "core": CORE,
+        "pinned": PINNED,
+        "cli": CLI,
+        "loose": LOOSE,
+        "own": OWN,
+        "ranged": RANGED,
+        "outside": OUTSIDE,
+    }
+    for name, manifest in members.items():
+        (root / "crates" / name).mkdir(parents=True)
+        (root / "crates" / name / "Cargo.toml").write_text(manifest)
+    return root
+
+
+def read(root, *parts):
+    return (root.joinpath(*parts) / "Cargo.toml").read_text()
+
+
+def test_a_bump_moves_path_dependencies_on_crates_sharing_the_version(tmp_path):
+    root = lockstep(tmp_path)
+    runner = FakeRunner().reply("uv", stdout='{"version": "0.3.0"}')
+
+    version_source(runner, root).apply_bump("minor")
+
+    manifest = read(root)
+    assert 'core = { version = "0.3.0", path = "crates/core" }' in manifest
+    assert 'pinned = { version = "=0.3.0", path = "crates/pinned" }' in manifest
+    assert '[workspace.package]\nversion = "0.3.0"' in manifest
+    # `[workspace.dependencies]`, written short, comes out in full
+    assert '[workspace.dependencies]\ncore = { version = "0.3.0"' in manifest
+
+    cli = read(root, "crates", "cli")
+    assert "# a comment that has to survive" in cli
+    assert 'core = { version = "^0.3.0", path = "../core" }' in cli
+    assert 'pinned = { version = "=0.3.0", path = "../pinned" }' in cli
+    assert 'core = { version = "~0.3.0", path = "../core" }' in cli
+
+
+def test_a_bump_leaves_other_dependencies_alone(tmp_path):
+    root = lockstep(tmp_path)
+    runner = FakeRunner().reply("uv", stdout='{"version": "0.3.0"}')
+
+    version_source(runner, root).apply_bump("minor")
+
+    cli = read(root, "crates", "cli")
+    # no version to move, a version of its own, a range chosen on purpose
+    assert 'loose = { path = "../loose" }' in cli
+    assert 'own = { version = "1.0.0", path = "../own" }' in cli
+    assert 'ranged = { version = ">=0.2, <0.4", path = "../ranged" }' in cli
+    assert 'serde = "1"' in cli
+    # excluded from the workspace, so not part of this release
+    assert read(root, "crates", "outside") == OUTSIDE
+    assert read(root, "crates", "core") == CORE
+
+
+def test_moving_path_dependencies_does_not_break_the_relock(tmp_path):
+    root = lockstep(tmp_path)
+    (root / "Cargo.lock").write_text("")
+    runner = FakeRunner().reply("uv", stdout='{"version": "0.3.0"}')
+
+    version_source(runner, root).apply_bump("minor")
+
+    assert runner.ran("cargo update --workspace")
+
+
+def test_a_workspace_names_the_member_manifests_a_bump_writes(tmp_path):
+    root = lockstep(tmp_path)
+
+    assert version_source(LocalRunner(), root).written_files() == [
+        "Cargo.toml",
+        "crates/cli/Cargo.toml",
+    ]
+
+
+def test_a_workspace_without_internal_requirements_writes_only_its_manifest(tmp_path):
+    root = workspace(tmp_path)
+
+    assert version_source(LocalRunner(), root).written_files() == ["Cargo.toml"]
+
+
+def test_a_single_crate_writes_only_its_manifest(tmp_path):
+    assert version_source(LocalRunner(), crate(tmp_path)).written_files() == [
+        "Cargo.toml"
+    ]
+
+
+def test_a_root_package_with_its_own_version_moves_requirements_on_itself(tmp_path):
+    """
+    The root package is the version source here, so a member depending on it
+    follows; members inheriting the workspace version are not released by it.
+    """
+    (tmp_path / "pyproject.toml").write_text(STANZA)
+    (tmp_path / "Cargo.toml").write_text(
+        '[package]\nname = "root"\nversion = "1.0.0"\n\n'
+        '[workspace]\nmembers = ["a"]\n\n[workspace.package]\nversion = "5.0.0"\n'
+    )
+    (tmp_path / "a").mkdir()
+    (tmp_path / "a" / "Cargo.toml").write_text(
+        '[package]\nname = "a"\nversion = "2.0.0"\n\n'
+        '[dependencies]\nroot = { version = "1.0.0", path = ".." }\n'
+    )
+    runner = FakeRunner().reply("uv", stdout='{"version": "1.1.0"}')
+
+    version_source(runner, tmp_path).apply_bump("minor")
+
+    assert 'root = { version = "1.1.0", path = ".." }' in read(tmp_path, "a")
